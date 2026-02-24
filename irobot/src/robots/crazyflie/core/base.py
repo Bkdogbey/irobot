@@ -197,3 +197,8 @@ class CrazyflieComponent(BaseComponent):
         """Cleanup when object is destroyed."""
         if self.cf and self.is_connected:
             self.disconnect()
+<<<<<<< HEAD
+=======
+
+            
+>>>>>>> 92b566d (restructure)

@@ -15,4 +15,8 @@ class CrazyflieConfig(BaseComponentConfig):
     is_connected = False
 
     # Initialize the low-level drivers
+<<<<<<< HEAD
     cflib.crtp.init_drivers()
+=======
+    cflib.crtp.init_drivers()
+>>>>>>> 92b566d (restructure)
