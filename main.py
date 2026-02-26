@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+from ros_sugar import Launcher
 
-import yaml
+from irobot.src.projects.probabilistic_stl.components.config import CrazyflieConfig
+from irobot.src.projects.probabilistic_stl.components.crazyflie import CrazyfliePlanning
 
-from utils import skip_run
+my_component = CrazyfliePlanning(
+    component_name='crazyflie_planning',
+    config=CrazyflieConfig(z_hold=0.5),
+)
 
-# The configuration file
-config_path = 'configs/config.yml'
-config = yaml.load(Path.open(str(config_path)), Loader=yaml.SafeLoader)
-
-with skip_run('skip', 'Data') as check, check():
-    pass
+launcher = Launcher()
+launcher.add_pkg(components=[my_component], activate_all_components_on_start=True)
+launcher.bringup()

@@ -405,3 +405,5 @@ def build_test5_environment(device="cpu") -> Environment:
     env.set_goal(x_range=[1.6, 2.0], y_range=[-0.2, 0.2])
     env.add_obstacle(x_range=[0.6, 1.0], y_range=[-0.3, 0.3])
     return env
+
+

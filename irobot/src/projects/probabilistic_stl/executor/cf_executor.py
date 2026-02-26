@@ -50,10 +50,11 @@ class CrazyflieSTLExecutor:
         cov = torch.eye(2, dtype=torch.float32) * inflate_cov
         return mean, cov
 
-    def plan(self, env, T, planner_cfg, spec_fn, verbose=True):
+    def plan(self, env, T, planner_cfg, spec_fn, verbose=True, init_guess=None):
         """
         Run pdSTL optimizer from current lighthouse position.
-        spec_fn: callable(env, T) -> STL_Formula
+        spec_fn:    callable(env, T) -> STL_Formula
+        init_guess: optional Tensor [T, 2] to warm-start the optimizer
         Returns: u_trace, mean_trace, cov_trace, p_sat, history
         """
         from planning.planner import ProbabilisticSTLPlanner
@@ -65,7 +66,7 @@ class CrazyflieSTLExecutor:
             self.dynamics, env, T, config=planner_cfg
         )
         mean_trace, cov_trace, u_trace, p_sat, history = planner.solve(
-            x0_mean, x0_cov, verbose=verbose, spec=spec
+            x0_mean, x0_cov, verbose=verbose, spec=spec, init_guess=init_guess
         )
 
         logger.info('Plan complete | P(sat)=%.4f', p_sat)
@@ -90,36 +91,62 @@ class CrazyflieSTLExecutor:
         self._stop()
 
     def execute_mpc(self, env, T_horizon, planner_cfg, spec_fn,
-                    max_steps=150, goal_tol=0.25):
+                    max_steps=200, goal_tol=0.25, warm_iters=50, init_u=None):
         """
-        Receding horizon MPC: replan every step from live lighthouse position.
-        Use only after open-loop (Task 6) validates the pipeline.
+        Warm-started receding horizon MPC.
+
+        Each replan uses the shifted previous solution as init_guess so the
+        optimizer converges in far fewer iterations after the first step.
+
+        Args:
+            env:          Environment with goal and obstacles.
+            T_horizon:    Planning horizon (steps).
+            planner_cfg:  Full planner config (used for cold start).
+            spec_fn:      callable(env, T) -> STL_Formula
+            max_steps:    Maximum MPC iterations before giving up.
+            goal_tol:     Distance (m) at which the goal is declared reached.
+            warm_iters:   Optimizer iterations for warm-started replans.
+            init_u:       Optional Tensor [T, 2] — seed from an offline plan.
         """
         goal_center = torch.tensor([
             sum(env.goal["x"]) / 2.0,
             sum(env.goal["y"]) / 2.0,
         ])
 
+        # Warm-start config: fewer iterations since we start from a good solution
+        warm_cfg = {**planner_cfg, 'max_iters': warm_iters}
+
+        prev_u = init_u  # None → cold start on first iteration
+
         for step in range(max_steps):
             curr_mean, _ = self.get_belief()
             dist = torch.norm(curr_mean - goal_center).item()
 
-            logger.info('MPC Step %03d | pos=[%.2f, %.2f] | dist=%.2f | goal=[%.2f, %.2f]',
-                        step, curr_mean[0], curr_mean[1], dist,
-                        goal_center[0], goal_center[1])
+            logger.info('MPC step %03d | pos=[%.2f, %.2f] | dist_to_goal=%.3f | P(sat) tracking',
+                        step, curr_mean[0], curr_mean[1], dist)
 
             if dist < goal_tol:
                 logger.info('Goal reached at step %d', step)
                 break
 
+            # Shift previous solution by one step to align with current time
+            if prev_u is not None:
+                init_guess = torch.cat([prev_u[1:], prev_u[-1:]], dim=0)
+                cfg = warm_cfg
+            else:
+                init_guess = None   # cold start
+                cfg = planner_cfg
+
             u_trace, _, _, p_sat, _ = self.plan(
-                env, T_horizon, planner_cfg, spec_fn, verbose=False
+                env, T_horizon, cfg, spec_fn, verbose=False, init_guess=init_guess
             )
+
+            # Execute the first control step
             u0 = u_trace[0].detach().cpu().numpy()
-            self.cf.send_velocity_setpoint(
-                float(u0[0]), float(u0[1]), 0.0, self.z_hold
-            )
+            self.cf.send_velocity_setpoint(float(u0[0]), float(u0[1]), 0.0, self.z_hold)
             time.sleep(self.dt)
+
+            prev_u = u_trace.detach()
 
         self._stop()
 

@@ -16,7 +16,6 @@ import cflib
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
 from cflib.utils import uri_helper
-from ros_sugar.core import BaseComponent
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ MAX_THRUST = 25000
 DEFAULT_HOVER_Z = 0.3  # meters
 
 
-class CrazyflieComponent(BaseComponent):
+class CrazyflieBase:
     """
     Sugarcoat Component for Crazyflie drone control.
 
@@ -36,35 +35,22 @@ class CrazyflieComponent(BaseComponent):
     design patterns for component-based robotics development.
     """
 
-    def __init__(
-        self,
-        *,
-        component_name: str,
-        config: None,
-        **kwargs,
-    ) -> None:
+    def __init__(self, config) -> None:
         # Set default config if config is not provided
         self.config = config
-
-        super().__init__(
-            component_name=component_name,
-            config=self.config,
-            **kwargs,
-        )
 
         self.uri = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E781')
         self.cf = None
         self.is_connected = False
-        self._current_pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
         # Initialize the low-level drivers
         cflib.crtp.init_drivers()
 
-        self.current_x   = 0.0
-        self.current_y   = 0.0
-        self.current_z   = 0.0
-        self.current_vx  = 0.0
-        self.current_vy  = 0.0
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_z = 0.0
+        self.current_vx = 0.0
+        self.current_vy = 0.0
         self.current_yaw = 0.0  # radians, from stateEstimate.yaw
         self.state_ready = False
 
@@ -213,7 +199,7 @@ class CrazyflieComponent(BaseComponent):
         duration: float = 2.0,
     ):
         """
-        Fly to a position using smooth interpolation from the current setpoint.
+        Fly to a position using smooth interpolation from the current lighthouse position.
 
         Requires a positioning deck (e.g. Flow deck or Lighthouse).
 
@@ -229,9 +215,9 @@ class CrazyflieComponent(BaseComponent):
             logger.warning('Cannot fly_to: Not connected to Crazyflie')
             return
 
+        start = (self.current_x, self.current_y, self.current_z)
         logger.info('Flying to (%.2f, %.2f, %.2f) yaw=%.1f over %.1fs', x, y, z, yaw, duration)
-        self._move_to(self._current_pos, (x, y, z), yaw=yaw, duration=duration)
-        self._current_pos = (x, y, z)
+        self._move_to(start, (x, y, z), yaw=yaw, duration=duration)
 
     def fly_from_to(
         self,
@@ -268,7 +254,6 @@ class CrazyflieComponent(BaseComponent):
         # Takeoff: rise slowly — use dedicated takeoff_time, not travel_time
         takeoff_time = max(travel_time, travel_time * (sz / max(sz, 0.01)))
         self._move_to((sx, sy, 0.0), (sx, sy, sz), duration=takeoff_time)
-        self._current_pos = (sx, sy, sz)
 
         # Hover at start
         self.fly_to(sx, sy, sz, duration=hover_time)
@@ -287,10 +272,7 @@ class CrazyflieComponent(BaseComponent):
             time.sleep(0.05)
 
     def _execution_step(self):
-        """
-        Disabled for experiment use.
-        Motor commands are driven manually by CrazyflieSTLExecutor.
-        """
+
         thrust_mult = 1
         thrust_step = 500
         thrust = 20000
@@ -323,11 +305,11 @@ class CrazyflieComponent(BaseComponent):
         stateEstimate.x/y/z are in the lighthouse world frame (meters).
         """
         log_conf = LogConfig(name='LighthouseState', period_in_ms=50)
-        log_conf.add_variable('stateEstimate.x',   'float')
-        log_conf.add_variable('stateEstimate.y',   'float')
-        log_conf.add_variable('stateEstimate.z',   'float')
-        log_conf.add_variable('stateEstimate.vx',  'float')
-        log_conf.add_variable('stateEstimate.vy',  'float')
+        log_conf.add_variable('stateEstimate.x', 'float')
+        log_conf.add_variable('stateEstimate.y', 'float')
+        log_conf.add_variable('stateEstimate.z', 'float')
+        log_conf.add_variable('stateEstimate.vx', 'float')
+        log_conf.add_variable('stateEstimate.vy', 'float')
         log_conf.add_variable('stateEstimate.yaw', 'float')  # radians
 
         self.cf.log.add_config(log_conf)
@@ -337,11 +319,11 @@ class CrazyflieComponent(BaseComponent):
 
     def _state_callback(self, _timestamp, data, _logconf):
         """Receives lighthouse state estimates, updates local fields, and publishes to ROS."""
-        self.current_x   = data['stateEstimate.x']
-        self.current_y   = data['stateEstimate.y']
-        self.current_z   = data['stateEstimate.z']
-        self.current_vx  = data['stateEstimate.vx']
-        self.current_vy  = data['stateEstimate.vy']
+        self.current_x = data['stateEstimate.x']
+        self.current_y = data['stateEstimate.y']
+        self.current_z = data['stateEstimate.z']
+        self.current_vx = data['stateEstimate.vx']
+        self.current_vy = data['stateEstimate.vy']
         self.current_yaw = data['stateEstimate.yaw']
         self.state_ready = True
         self._publish_state()
@@ -349,8 +331,7 @@ class CrazyflieComponent(BaseComponent):
     def _publish_state(self):
         """Placeholder for ROS state publishing (odom/TF). Override in subclass if needed."""
 
-    def send_velocity_setpoint(self, vx: float, vy: float,
-                                yaw_rate: float, z_hold: float):
+    def send_velocity_setpoint(self, vx: float, vy: float, yaw_rate: float, z_hold: float):
         """
         Send 2D velocity command at fixed hover height.
         Maps directly to SingleIntegrator planner output u = [vx, vy].
@@ -419,5 +400,3 @@ class CrazyflieComponent(BaseComponent):
         """Cleanup when object is destroyed."""
         if self.cf and self.is_connected:
             self.disconnect()
-
-            
