@@ -13,3 +13,4 @@ my_component = CrazyfliePlanning(
 launcher = Launcher()
 launcher.add_pkg(components=[my_component], activate_all_components_on_start=True)
 launcher.bringup()
+
