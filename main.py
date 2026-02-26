@@ -7,7 +7,7 @@ from irobot.src.projects.probabilistic_stl.components.crazyflie import Crazyflie
 
 my_component = CrazyfliePlanning(
     component_name='crazyflie_planning',
-    config=CrazyflieConfig(z_hold=0.5),
+    config=CrazyflieConfig(z_hold=0.3),
 )
 
 launcher = Launcher()
