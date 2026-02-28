@@ -18,7 +18,7 @@ from irobot.src.robots.crazyflie.core.base import CrazyflieBase
 USE_OPTIMISED = False
 # Condition label: one of "deterministic_nominal", "deterministic_wind",
 #                          "pdstl_nominal", "pdstl_wind"
-CONDITION = 'deterministic_nominal'
+CONDITION = 'deterministic_wind'
 
 
 def _sine_waypoints() -> list[tuple[float, float, float]]:
