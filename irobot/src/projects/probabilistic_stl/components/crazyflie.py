@@ -8,8 +8,24 @@ from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils.reset_estimator import reset_estimator
 from ros_sugar.core import BaseComponent
 
+from irobot.src.projects.probabilistic_stl.components.flight_logger import FlightLogger
+from irobot.src.projects.probabilistic_stl.components.opt_waypoints import WAYPOINTS
 from irobot.src.projects.probabilistic_stl.components.spline_path import build_cr_path
 from irobot.src.robots.crazyflie.core.base import CrazyflieBase
+
+# ── Trial configuration  <-- edit these two lines before each run ──────────
+# Path selector: True → pDSTL-optimised path, False → original sine path
+USE_OPTIMISED = False
+# Condition label: one of "deterministic_nominal", "deterministic_wind",
+#                          "pdstl_nominal", "pdstl_wind"
+CONDITION = 'deterministic_nominal'
+
+
+def _sine_waypoints() -> list[tuple[float, float, float]]:
+    start_0 = 1.5
+    y_pos = np.linspace(-start_0, 0.65, 10)
+    x_pos = 0.5 * np.sin(np.pi * y_pos / start_0)
+    return [(float(x), float(y), 0.2) for x, y in zip(x_pos, y_pos)]
 
 
 class CrazyfliePlanning(BaseComponent):
@@ -33,45 +49,31 @@ class CrazyfliePlanning(BaseComponent):
     def _execute_once(self):
         # self._go_to_origin()
         start_0 = 1.5
+        logger = FlightLogger(CONDITION)
+
         self.position_commander.take_off(height=0.2)
         time.sleep(1.0)
         self.position_commander.go_to(0, -start_0, 0.2)
         time.sleep(0.1)
 
-        y_pos = np.linspace(-start_0, 0.65, 10)
-        x_pos = 0.5 * np.sin(np.pi * y_pos / start_0)
+        logger.start()
+        waypoints = WAYPOINTS if USE_OPTIMISED else _sine_waypoints()
+        try:
+            for x, y, z in waypoints:
+                print('Setting position {} {}'.format(x, y))
+                self.position_commander.go_to(x, y, z)
+                logger.log_waypoint(x, y, z)
+                time.sleep(0.1)
 
-        for x, y in zip(x_pos, y_pos):
-            print('Setting position {} {}'.format(x, y))
-            # 1. Send the position setpoint (required for active control)
-            self.position_commander.go_to(x, y, 0.2)
-            time.sleep(0.1)
-
-        self.position_commander.go_to(x, y, 0.65)
-        time.sleep(1.0)
-        self.position_commander.go_to(0, -start_0, 0.65)
-        time.sleep(1.0)
-        self.position_commander.go_to(0, -start_0, 0.1)
-        time.sleep(1.0)
-        self.position_commander.land()
-        # time.sleep(1.0)
-
-        # for x1, y1 in zip(x, y):
-        #     self.position_commander.go_to(x1, y1)
-        #     time.sleep(0.1)
-
-        # self.position_commander.land()
-        # self._go_to_origin()
-        # self.position_commander.take_off(height=0.5)
-        # time.sleep(1.0)
-
-        # try:
-        #     path = build_cr_path(z=0.5, n_points=20)
-        #     for x, y, z in path:
-        #         self.position_commander.go_to(x, y, z)
-        #     time.sleep(5.0)  # hover at goal for 5 s
-        # finally:
-        #     self.position_commander.land()
+            self.position_commander.go_to(x, y, 0.65)
+            time.sleep(1.0)
+            self.position_commander.go_to(0, -start_0, 0.65)
+            time.sleep(1.0)
+            self.position_commander.go_to(0, -start_0, 0.1)
+            time.sleep(1.0)
+        finally:
+            logger.save()
+            self.position_commander.land()
 
     def _execution_step(self):
         pass
