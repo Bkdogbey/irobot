@@ -1,14 +1,12 @@
 """
 Flight data logger for Crazyflie experiment trials.
 
-Four conditions:
-    deterministic_nominal  — original sine path, no fan
-    deterministic_wind     — original sine path, fan on
-    pdstl_nominal          — pDSTL-optimised path, no fan
-    pdstl_wind             — pDSTL-optimised path, fan on
+Two conditions:
+    deterministic  — original sine path (USE_OPTIMISED = False)
+    pdstl          — pDSTL-optimised path (USE_OPTIMISED = True)
 
 Usage (from crazyflie.py):
-    logger = FlightLogger("pdstl_wind")
+    logger = FlightLogger("pdstl", fan_speed=12)
     logger.start()
     logger.start_actual_logging(lambda: (cf_base.current_x,
                                          cf_base.current_y,
@@ -20,17 +18,19 @@ Usage (from crazyflie.py):
     logger.save()
 
 Output files (logs/ directory, next to this file):
-    <condition>_<ts>_commanded.csv  — one row per go_to call
-    <condition>_<ts>_actual.csv     — 10 Hz sampled Lighthouse position
+    <condition>_fan<XX>_run<NN>_<ts>_commanded.csv  — one row per go_to call
+    <condition>_fan<XX>_run<NN>_<ts>_actual.csv     — 10 Hz sampled Lighthouse position
+    (crashed trials get _CRASH_ between run tag and timestamp)
 
 Columns (both files):
-    condition, t, x, y, z, outside_obs1, outside_obs2, safe
+    condition, t, x, y, z, outside_obs1, outside_obs2, outside_obs3, safe
 """
 
 from __future__ import annotations
 
 import csv
 import pathlib
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -39,10 +39,8 @@ from typing import Callable
 
 # ── Valid condition labels ──────────────────────────────────────────────────
 CONDITIONS = (
-    'deterministic_nominal',
-    'deterministic_wind',
-    'pdstl_nominal',
-    'pdstl_wind',
+    'deterministic',
+    'pdstl',
 )
 
 # ── Obstacles (x_min, x_max, y_min, y_max) — must match optimise_cf_path.py ─
@@ -57,6 +55,9 @@ _LOGS_DIR = pathlib.Path(__file__).parent / 'logs'
 
 # Actual-position sampling rate (Hz) — CrazyflieBase updates at 20 Hz so 10 is safe
 _SAMPLE_HZ = 10
+
+# Regex to find existing run files for auto-increment
+_RUN_RE = re.compile(r'_run(\d+)_')
 
 
 def _inside(x: float, y: float, obs: tuple[float, float, float, float]) -> bool:
@@ -87,8 +88,12 @@ class FlightLogger:
     Logs commanded waypoints and continuous Lighthouse position for one trial.
 
     Two output files are written on save():
-      - <condition>_fan<XX>_<ts>_commanded.csv  one row per go_to call
-      - <condition>_fan<XX>_<ts>_actual.csv     10 Hz sampled real position
+      - <condition>_fan<XX>_run<NN>_<ts>_commanded.csv  one row per go_to call
+      - <condition>_fan<XX>_run<NN>_<ts>_actual.csv     10 Hz sampled real position
+
+    The run number NN is auto-incremented by scanning the logs directory for
+    existing files with the same (condition, fan_speed) so that successive calls
+    of main.py automatically produce run01, run02, … without any manual editing.
     """
 
     condition: str
@@ -164,19 +169,35 @@ class FlightLogger:
         """Call from the exception handler to flag this trial as a crash."""
         self._crashed = True
 
+    def _next_run_number(self) -> int:
+        """Scan logs dir and return the next available run number for this cell."""
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        prefix = f'{self.condition}_fan{self.fan_speed:02d}_run'
+        existing = list(_LOGS_DIR.glob(f'{prefix}*_actual.csv'))
+        run_nums = [
+            int(m.group(1))
+            for f in existing
+            if (m := _RUN_RE.search(f.name))
+        ]
+        return max(run_nums, default=0) + 1
+
     def save(self) -> tuple[pathlib.Path, pathlib.Path]:
         """Write both CSVs and return (commanded_path, actual_path)."""
         _LOGS_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+        run_num = self._next_run_number()
 
         fan_tag = f'fan{self.fan_speed:02d}'
+        run_tag = f'run{run_num:02d}'
         crash_tag = '_CRASH' if self._crashed else ''
-        cmd_path = _LOGS_DIR / f'{self.condition}_{fan_tag}{crash_tag}_{ts}_commanded.csv'
-        act_path = _LOGS_DIR / f'{self.condition}_{fan_tag}{crash_tag}_{ts}_actual.csv'
+        stem = f'{self.condition}_{fan_tag}_{run_tag}{crash_tag}_{ts}'
+        cmd_path = _LOGS_DIR / f'{stem}_commanded.csv'
+        act_path = _LOGS_DIR / f'{stem}_actual.csv'
 
         self._write_csv(cmd_path, self._commanded, label='commanded')
         self._write_csv(act_path, self._actual, label='actual')
 
+        print(f'[FlightLogger] Run {run_num:02d} | condition={self.condition} | fan={self.fan_speed}')
         if self._crashed:
             print('[FlightLogger] *** CRASH flagged — partial data saved ***')
 

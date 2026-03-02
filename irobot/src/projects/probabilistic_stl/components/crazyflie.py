@@ -13,14 +13,18 @@ from irobot.src.projects.probabilistic_stl.components.opt_waypoints import WAYPO
 from irobot.src.projects.probabilistic_stl.components.spline_path import build_cr_path
 from irobot.src.robots.crazyflie.core.base import CrazyflieBase
 
-# ── Trial configuration  <-- edit these three lines before each run ────────
+# ── Trial configuration  <-- edit these two lines before each run ──────────
 # Path selector: True → pDSTL-optimised path, False → original sine path
-USE_OPTIMISED = False
-# Condition label: one of "deterministic_nominal", "deterministic_wind",
-#                          "pdstl_nominal", "pdstl_wind"
-CONDITION = 'deterministic_wind'
-# Fan speed integer (0 = off, 2/4/6/8/10/12 for increasing wind levels)
-FAN_SPEED = 6
+USE_OPTIMISED = True
+# Condition label: 'deterministic' (no optimisation) or 'pdstl' (optimised)
+CONDITION = 'pdstl'
+# Fan speed integer: 0 = off (nominal), 6 / 12 / 18 for wind levels
+FAN_SPEED = 0
+#
+# Quick reference:
+#   Condition      USE_OPTIMISED   CONDITION          FAN_SPEED
+#   Deterministic  False           'deterministic'    0 / 6 / 12 / 18
+#   pDSTL          True            'pdstl'            0 / 6 / 12 / 18
 
 
 def _sine_waypoints() -> list[tuple[float, float, float]]:
