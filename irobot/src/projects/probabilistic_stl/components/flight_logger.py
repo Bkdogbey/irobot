@@ -10,40 +10,53 @@ Four conditions:
 Usage (from crazyflie.py):
     logger = FlightLogger("pdstl_wind")
     logger.start()
+    logger.start_actual_logging(lambda: (cf_base.current_x,
+                                         cf_base.current_y,
+                                         cf_base.current_z))
     ...
-    logger.log_waypoint(x, y, z)
+    logger.log_waypoint(x, y, z)   # called at each go_to
     ...
+    logger.stop_actual_logging()
     logger.save()
 
-Output: logs/<condition>_<timestamp>.csv
-Columns: condition, t, x, y, z, outside_obs1, outside_obs2, safe
+Output files (logs/ directory, next to this file):
+    <condition>_<ts>_commanded.csv  — one row per go_to call
+    <condition>_<ts>_actual.csv     — 10 Hz sampled Lighthouse position
+
+Columns (both files):
+    condition, t, x, y, z, outside_obs1, outside_obs2, safe
 """
 
 from __future__ import annotations
 
 import csv
 import pathlib
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Callable
 
 # ── Valid condition labels ──────────────────────────────────────────────────
 CONDITIONS = (
-    "deterministic_nominal",
-    "deterministic_wind",
-    "pdstl_nominal",
-    "pdstl_wind",
+    'deterministic_nominal',
+    'deterministic_wind',
+    'pdstl_nominal',
+    'pdstl_wind',
 )
 
 # ── Obstacles (x_min, x_max, y_min, y_max) — must match optimise_cf_path.py ─
 _OBSTACLES: list[tuple[float, float, float, float]] = [
-    (0.15, 0.55, -0.90, -0.50),  # OBS-1
-    (-0.45, 0.05, 0.00, 0.40),   # OBS-2
+    (-0.25,  0.25, -1.05, -0.85),  # OBS-1
+    (-0.45,  0.05,  0.10,  0.35),  # OBS-2
+    ( 0.20,  0.55, -0.25,  0.10),  # OBS-3
 ]
 
 # ── Log directory: next to this file ────────────────────────────────────────
-_LOGS_DIR = pathlib.Path(__file__).parent / "logs"
+_LOGS_DIR = pathlib.Path(__file__).parent / 'logs'
+
+# Actual-position sampling rate (Hz) — CrazyflieBase updates at 20 Hz so 10 is safe
+_SAMPLE_HZ = 10
 
 
 def _inside(x: float, y: float, obs: tuple[float, float, float, float]) -> bool:
@@ -52,66 +65,146 @@ def _inside(x: float, y: float, obs: tuple[float, float, float, float]) -> bool:
     return x0 <= x <= x1 and y0 <= y <= y1
 
 
+def _safety_row(condition: str, t: float, x: float, y: float, z: float,
+                obstacles: list[tuple[float, float, float, float]]) -> dict:
+    outside = [not _inside(x, y, obs) for obs in obstacles]
+    row: dict = {
+        'condition': condition,
+        't': t,
+        'x': round(x, 6),
+        'y': round(y, 6),
+        'z': round(z, 6),
+    }
+    for i, out in enumerate(outside, start=1):
+        row[f'outside_obs{i}'] = int(out)
+    row['safe'] = int(all(outside))
+    return row
+
+
 @dataclass
 class FlightLogger:
-    """Logs commanded waypoints and per-step geometric safety for one trial."""
+    """
+    Logs commanded waypoints and continuous Lighthouse position for one trial.
+
+    Two output files are written on save():
+      - <condition>_fan<XX>_<ts>_commanded.csv  one row per go_to call
+      - <condition>_fan<XX>_<ts>_actual.csv     10 Hz sampled real position
+    """
 
     condition: str
+    fan_speed: int = 0
     obstacles: list[tuple[float, float, float, float]] = field(
         default_factory=lambda: list(_OBSTACLES)
     )
 
     _t0: float = field(init=False, default=0.0)
-    _rows: list[dict] = field(init=False, default_factory=list)
+    _commanded: list[dict] = field(init=False, default_factory=list)
+    _actual: list[dict] = field(init=False, default_factory=list)
+    _stop_event: threading.Event = field(init=False, default_factory=threading.Event)
+    _thread: threading.Thread | None = field(init=False, default=None)
+    _crashed: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         if self.condition not in CONDITIONS:
             raise ValueError(
-                f"Unknown condition {self.condition!r}. "
-                f"Choose from: {CONDITIONS}"
+                f'Unknown condition {self.condition!r}. '
+                f'Choose from: {CONDITIONS}'
             )
 
     def start(self) -> None:
-        """Call just before the first go_to."""
+        """Record start time. Call just before the first go_to."""
         self._t0 = time.monotonic()
-        self._rows = []
+        self._commanded = []
+        self._actual = []
+
+    def start_actual_logging(
+        self, get_pos: Callable[[], tuple[float, float, float]]
+    ) -> None:
+        """
+        Begin sampling actual Lighthouse position at _SAMPLE_HZ in a background thread.
+
+        Args:
+            get_pos: callable returning (x, y, z) from CrazyflieBase.current_x/y/z.
+                     Example: lambda: (cf_base.current_x, cf_base.current_y, cf_base.current_z)
+        """
+        self._stop_event.clear()
+        interval = 1.0 / _SAMPLE_HZ
+
+        def _loop() -> None:
+            while not self._stop_event.is_set():
+                tick = time.monotonic()
+                x, y, z = get_pos()
+                t = round(tick - self._t0, 4)
+                self._actual.append(
+                    _safety_row(self.condition, t, x, y, z, self.obstacles)
+                )
+                elapsed = time.monotonic() - tick
+                remaining = interval - elapsed
+                if remaining > 0:
+                    self._stop_event.wait(timeout=remaining)
+
+        self._thread = threading.Thread(target=_loop, daemon=True)
+        self._thread.start()
+
+    def stop_actual_logging(self) -> None:
+        """Stop the background sampling thread. Call before save()."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
     def log_waypoint(self, x: float, y: float, z: float) -> None:
         """Log one commanded waypoint with elapsed time and safety flags."""
         t = round(time.monotonic() - self._t0, 4)
-        outside = [not _inside(x, y, obs) for obs in self.obstacles]
-        safe = all(outside)
-        row: dict = {
-            "condition": self.condition,
-            "t": t,
-            "x": round(x, 6),
-            "y": round(y, 6),
-            "z": round(z, 6),
-        }
-        for i, out in enumerate(outside, start=1):
-            row[f"outside_obs{i}"] = int(out)
-        row["safe"] = int(safe)
-        self._rows.append(row)
+        self._commanded.append(
+            _safety_row(self.condition, t, x, y, z, self.obstacles)
+        )
 
-    def save(self) -> pathlib.Path:
-        """Write CSV and return the file path."""
+    def mark_crashed(self) -> None:
+        """Call from the exception handler to flag this trial as a crash."""
+        self._crashed = True
+
+    def save(self) -> tuple[pathlib.Path, pathlib.Path]:
+        """Write both CSVs and return (commanded_path, actual_path)."""
         _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        path = _LOGS_DIR / f"{self.condition}_{ts}.csv"
+        ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
 
-        if not self._rows:
-            print("[FlightLogger] No data to save.")
-            return path
+        fan_tag = f'fan{self.fan_speed:02d}'
+        crash_tag = '_CRASH' if self._crashed else ''
+        cmd_path = _LOGS_DIR / f'{self.condition}_{fan_tag}{crash_tag}_{ts}_commanded.csv'
+        act_path = _LOGS_DIR / f'{self.condition}_{fan_tag}{crash_tag}_{ts}_actual.csv'
 
-        fieldnames = list(self._rows[0].keys())
-        with path.open("w", newline="") as fh:
+        self._write_csv(cmd_path, self._commanded, label='commanded')
+        self._write_csv(act_path, self._actual, label='actual')
+
+        if self._crashed:
+            print('[FlightLogger] *** CRASH flagged — partial data saved ***')
+
+        if self._actual:
+            xs = [r['x'] for r in self._actual]
+            ys = [r['y'] for r in self._actual]
+            zs = [r['z'] for r in self._actual]
+            print(
+                f'[FlightLogger] Mean position — '
+                f'x={sum(xs)/len(xs):.3f} m  '
+                f'y={sum(ys)/len(ys):.3f} m  '
+                f'z={sum(zs)/len(zs):.3f} m  '
+                f'({len(self._actual)} samples)'
+            )
+
+        return cmd_path, act_path
+
+    def _write_csv(self, path: pathlib.Path, rows: list[dict], label: str) -> None:
+        if not rows:
+            print(f'[FlightLogger] No {label} data to save.')
+            return
+        fieldnames = list(rows[0].keys())
+        with path.open('w', newline='') as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(self._rows)
-
-        n_unsafe = sum(1 for r in self._rows if not r["safe"])
+            writer.writerows(rows)
+        n_unsafe = sum(1 for r in rows if not r['safe'])
         print(
-            f"[FlightLogger] Saved {len(self._rows)} waypoints "
-            f"({n_unsafe} unsafe) → {path}"
+            f'[FlightLogger] {label}: {len(rows)} rows '
+            f'({n_unsafe} unsafe) → {path}'
         )
-        return path

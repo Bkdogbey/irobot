@@ -13,12 +13,14 @@ from irobot.src.projects.probabilistic_stl.components.opt_waypoints import WAYPO
 from irobot.src.projects.probabilistic_stl.components.spline_path import build_cr_path
 from irobot.src.robots.crazyflie.core.base import CrazyflieBase
 
-# ── Trial configuration  <-- edit these two lines before each run ──────────
+# ── Trial configuration  <-- edit these three lines before each run ────────
 # Path selector: True → pDSTL-optimised path, False → original sine path
 USE_OPTIMISED = False
 # Condition label: one of "deterministic_nominal", "deterministic_wind",
 #                          "pdstl_nominal", "pdstl_wind"
 CONDITION = 'deterministic_wind'
+# Fan speed integer (0 = off, 2/4/6/8/10/12 for increasing wind levels)
+FAN_SPEED = 6
 
 
 def _sine_waypoints() -> list[tuple[float, float, float]]:
@@ -49,7 +51,7 @@ class CrazyfliePlanning(BaseComponent):
     def _execute_once(self):
         # self._go_to_origin()
         start_0 = 1.5
-        logger = FlightLogger(CONDITION)
+        logger = FlightLogger(CONDITION, fan_speed=FAN_SPEED)
 
         self.position_commander.take_off(height=0.2)
         time.sleep(1.0)
@@ -57,6 +59,9 @@ class CrazyfliePlanning(BaseComponent):
         time.sleep(0.1)
 
         logger.start()
+        logger.start_actual_logging(
+            lambda: (self.crazyflie.current_x, self.crazyflie.current_y, self.crazyflie.current_z)
+        )
         waypoints = WAYPOINTS if USE_OPTIMISED else _sine_waypoints()
         try:
             for x, y, z in waypoints:
@@ -71,7 +76,12 @@ class CrazyfliePlanning(BaseComponent):
             time.sleep(1.0)
             self.position_commander.go_to(0, -start_0, 0.1)
             time.sleep(1.0)
+        except Exception as exc:
+            print(f'[CrazyfliePlanning] Exception during flight: {exc}')
+            logger.mark_crashed()
+            raise
         finally:
+            logger.stop_actual_logging()
             logger.save()
             self.position_commander.land()
 

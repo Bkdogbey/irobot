@@ -48,8 +48,9 @@ Z = 0.2  # flight altitude (m) — not optimised here
 # ── Obstacles (x_min, x_max, y_min, y_max) in metres ─────────────────────────
 #    ADJUST THESE to your physical lab obstacles
 OBSTACLES = [
-    (0.15, 0.55, -0.90, -0.50),  # OBS-1 placeholder
-    (-0.45, 0.05, 0.00, 0.40),  # OBS-2 placeholder
+    (-0.25,  0.25, -1.05, -0.85),  # OBS-1
+    (-0.45,  0.05,  0.10,  0.35),  # OBS-2
+    ( 0.20,  0.55, -0.25,  0.10),  # OBS-3
 ]
 
 # ── Noise model ───────────────────────────────────────────────────────────────
