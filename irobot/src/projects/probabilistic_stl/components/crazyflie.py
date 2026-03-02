@@ -15,11 +15,11 @@ from irobot.src.robots.crazyflie.core.base import CrazyflieBase
 
 # ── Trial configuration  <-- edit these two lines before each run ──────────
 # Path selector: True → pDSTL-optimised path, False → original sine path
-USE_OPTIMISED = True
+USE_OPTIMISED = False
 # Condition label: 'deterministic' (no optimisation) or 'pdstl' (optimised)
-CONDITION = 'pdstl'
+CONDITION = 'deterministic'
 # Fan speed integer: 0 = off (nominal), 6 / 12 / 18 for wind levels
-FAN_SPEED = 0
+FAN_SPEED = 18
 #
 # Quick reference:
 #   Condition      USE_OPTIMISED   CONDITION          FAN_SPEED
