@@ -312,6 +312,90 @@ def print_results_table(data: dict) -> None:
     print('\n' + '=' * w + '\n')
 
 
+def print_latex_table(data: dict) -> None:
+    """
+    Print a booktabs LaTeX table grouped as:
+      Deterministic (Safety %, Min Clr, Viols) | pDSTL (Safety %, Min Clr, Viols)
+    """
+    orig = sine_waypoints()
+    opt  = opt_waypoints()
+
+    # Compute metrics for every (speed, path) pair
+    metrics: dict = {}
+    for spd in FAN_SPEEDS:
+        for key, planned in [('det', orig), ('pdstl', opt)]:
+            rows = data.get((spd, key), [])
+            if not rows:
+                metrics[(spd, key)] = None
+                continue
+            n     = len(rows)
+            viols = sum(1 for r in rows if not r['safe'])
+            metrics[(spd, key)] = {
+                'sr':      (n - viols) / n * 100.0,
+                'viols':   viols,
+                'min_clr': min(_min_obs_clearance(r['x'], r['y']) for r in rows),
+            }
+
+    def _bold(val_str: str, is_better: bool) -> str:
+        return f'\\textbf{{{val_str}}}' if is_better else val_str
+
+    def _em() -> str:
+        return r'\textemdash'
+
+    lines = [
+        r'\begin{table}[t]',
+        r'  \centering',
+        r'  \caption{Safety rate, minimum obstacle clearance, and constraint violations',
+        r'           for the deterministic and pDSTL-optimised paths under',
+        r'           increasing fan-induced wind disturbance.}',
+        r'  \label{tab:results}',
+        r'  \setlength{\tabcolsep}{5pt}',
+        r'  \begin{tabular}{c rrr rrr}',
+        r'    \toprule',
+        r'    & \multicolumn{3}{c}{Deterministic}',
+        r'    & \multicolumn{3}{c}{pDSTL (ours)} \\',
+        r'    \cmidrule(lr){2-4}\cmidrule(lr){5-7}',
+        r'    \multirow{2}{*}{Fan speed}',
+        r'    & Safe  & Min.\ clr. & Viols.',
+        r'    & Safe  & Min.\ clr. & Viols. \\',
+        r'    & (\%)  & (cm)       &',
+        r'    & (\%)  & (cm)       & \\',
+        r'    \midrule',
+    ]
+
+    for spd in FAN_SPEEDS:
+        d = metrics[(spd, 'det')]
+        p = metrics[(spd, 'pdstl')]
+        lbl = f'{spd}\\,(off)' if spd == 0 else str(spd)
+
+        sr_d  = f"{d['sr']:.1f}"      if d else _em()
+        sr_p  = f"{p['sr']:.1f}"      if p else _em()
+        cl_d  = f"{d['min_clr']:.1f}" if d else _em()
+        cl_p  = f"{p['min_clr']:.1f}" if p else _em()
+        vd    = str(d['viols'])        if d else _em()
+        vp    = str(p['viols'])        if p else _em()
+
+        if d and p:
+            sr_d  = _bold(sr_d,  d['sr']      <= p['sr'])       # det worse → no bold
+            sr_p  = _bold(sr_p,  p['sr']      >= d['sr'])       # pDSTL better → bold
+            cl_d  = _bold(cl_d,  d['min_clr'] <= p['min_clr'])
+            cl_p  = _bold(cl_p,  p['min_clr'] >= d['min_clr'])
+            vd    = _bold(vd,    d['viols']   >= p['viols'])    # more viols → no bold
+            vp    = _bold(vp,    p['viols']   <= d['viols'])
+
+        lines.append(f'    {lbl} & {sr_d} & {cl_d} & {vd} & {sr_p} & {cl_p} & {vp} \\\\')
+
+    lines += [
+        r'    \bottomrule',
+        r'  \end{tabular}',
+        r'\end{table}',
+    ]
+
+    print('\n% ── LaTeX table ─────────────────────────────────────────────────')
+    print('\n'.join(lines))
+    print('% ────────────────────────────────────────────────────────────────\n')
+
+
 def fig2_experiment():
     ieee_style()
 
@@ -390,7 +474,8 @@ def fig2_experiment():
     ax_bar.set_xticklabels([f'{s}\n(off)' if s == 0 else str(s) for s in FAN_SPEEDS])
     ax_bar.set_xlabel('Fan speed')
     ax_bar.set_ylabel('Safety rate (%)')
-    ax_bar.set_ylim(88, 102.5)
+    _ymin = max(0, min(sr_det + sr_pdstl) - 5)
+    ax_bar.set_ylim(_ymin, 102.5)
     ax_bar.set_title('(c) Empirical safety rate vs fan speed', pad=3)
     ax_bar.legend(loc='lower left')
     ax_bar.grid(True, axis='y', alpha=0.25, lw=0.5)
@@ -506,6 +591,7 @@ if __name__ == '__main__':
         _rows = load_csv(_LOGS / _fname)
         _data[(_spd, _pt)] = [r for r in _rows if r['t'] <= FWD_CUTOFF]
     print_results_table(_data)
+    print_latex_table(_data)
     fig2_experiment()
     fig3_clearance()
     fig4_all_speeds()
