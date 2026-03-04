@@ -43,11 +43,11 @@ CONDITIONS = (
     'pdstl',
 )
 
-# ── Obstacles (x_min, x_max, y_min, y_max) — must match optimise_cf_path.py ─
+# ── Obstacles (x_min, x_max, y_min, y_max) — must match generate_waypoints.py ─
 _OBSTACLES: list[tuple[float, float, float, float]] = [
-    (-0.25,  0.25, -1.05, -0.85),  # OBS-1
-    (-0.45,  0.05,  0.10,  0.35),  # OBS-2
-    ( 0.20,  0.55, -0.25,  0.10),  # OBS-3
+    (-0.165,  0.165, -1.144, -0.941),  # OBS-1 (red)
+    (-0.432, -0.102, -0.179,  0.049),  # OBS-2 (blue)
+    ( 0.114,  0.343, -0.611, -0.421),  # OBS-3 (green)
 ]
 
 # ── Log directory: next to this file ────────────────────────────────────────

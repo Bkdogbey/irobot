@@ -3,7 +3,7 @@ Publication figures for the pDSTL Crazyflie experiment.
 
 Generates four figures:
   fig1_paths.pdf      — planned paths + 2-sigma covariance ellipses (before/after)
-  fig2_experiment.pdf — trajectories at min/max wind + safety rate bar chart
+  fig2_experiment.pdf — mean paths at all fan speeds per condition (det | pDSTL), scatter background
   fig3_clearance.pdf  — minimum obstacle clearance vs fan speed (mean ± std across runs)
   fig4_all_speeds.pdf — mean paths at all fan speeds overlaid, one panel per condition
 
@@ -21,12 +21,10 @@ import pathlib
 import re
 import sys
 
-import matplotlib
-
-matplotlib.use('Agg')
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, FancyArrowPatch, Rectangle
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -47,55 +45,74 @@ GOAL = np.array([0.489, 0.65])
 N_WP = 10
 OBSTACLES = [
     (-0.25, 0.25, -1.05, -0.85),  # OBS-1
-    (-0.45,  0.05, 0.10, 0.35),   # OBS-2
-    ( 0.20,  0.55, -0.25, 0.10),  # OBS-3
+    (-0.45, 0.05, 0.10, 0.35),  # OBS-2
+    (0.25, 0.50, -0.25, 0.10),  # OBS-3
 ]
 SIGMA0 = np.eye(2) * (0.010**2)
 SIGMA_TOTAL_STEP = float(np.sqrt(0.010**2 + 0.020**2))
 DT = 0.1
 ALPHA = 0.90
 FWD_CUTOFF = 7.0
+GOAL_TOL = 0.15  # metres — within 15 cm of GOAL counts as reached
+GOAL_WINDOW = 2.0  # seconds — look at samples in the last 2 s of each run
+# Common arena limits applied to all trajectory panels so both panels are identical in size.
+# x range 2.0 m, y range 2.55 m → aspect ratio 1.275 (panels stay compact in a 2-col figure).
+_XLIM = (-1.0, 1.0)
+_YLIM = (-1.70, 0.85)
 
 
 # =============================================================================
 # Data loading — multi-run aware
 # =============================================================================
 
-def _build_fan_map() -> tuple[dict[tuple[int, str], list[pathlib.Path]], list[int]]:
+
+def _build_fan_map() -> tuple[dict[tuple[int, str], list[pathlib.Path]], list[int], set[pathlib.Path]]:
     """
     Auto-scan _LOGS for actual CSVs produced by the new naming scheme:
-        <condition>_fan<XX>_run<NN>_<ts>_actual.csv
+        <condition>_fan<XX>_run<NN>_<ts>_actual.csv          ← completed run
+        <condition>_fan<XX>_run<NN>_CRASH_<ts>_actual.csv   ← crashed run
 
-    Crashed files (<condition>_fan<XX>_run<NN>_CRASH_<ts>_actual.csv) are excluded.
+    Both are included. Crash paths are returned separately so load_all_runs
+    can mark their rows, making them automatically count as violations.
 
     Returns:
-        fan_map  : {(fan_speed, path_type): [list of matching Path objects]}
-        speeds   : sorted list of unique fan speeds found
+        fan_map     : {(fan_speed, path_type): [list of matching Path objects]}
+        speeds      : sorted list of unique fan speeds found
+        crash_paths : set of Path objects that are crash files
     """
-    pattern = re.compile(
+    pattern_ok = re.compile(
         r'^(?P<cond>deterministic|pdstl)_fan(?P<speed>\d+)_run(?P<run>\d+)'
         r'_(?P<ts>\d{8}T\d{6})_actual\.csv$'
     )
+    pattern_crash = re.compile(
+        r'^(?P<cond>deterministic|pdstl)_fan(?P<speed>\d+)_run(?P<run>\d+)'
+        r'_CRASH_(?P<ts>\d{8}T\d{6})_actual\.csv$'
+    )
     fan_map: dict[tuple[int, str], list[pathlib.Path]] = {}
+    crash_paths: set[pathlib.Path] = set()
+
     for f in sorted(_LOGS.glob('*_actual.csv')):
-        m = pattern.match(f.name)
+        m = pattern_ok.match(f.name) or pattern_crash.match(f.name)
         if not m:
-            continue  # old-format files, CRASH files, or unrelated
+            continue  # old-format or unrelated files
         cond = m.group('cond')
         speed = int(m.group('speed'))
         path_type = 'det' if cond == 'deterministic' else 'pdstl'
         key = (speed, path_type)
         fan_map.setdefault(key, []).append(f)
+        if pattern_crash.match(f.name):
+            crash_paths.add(f)
 
     speeds = sorted({k[0] for k in fan_map})
-    return fan_map, speeds
+    return fan_map, speeds, crash_paths
 
 
-FAN_MAP, FAN_SPEEDS = _build_fan_map()
+FAN_MAP, FAN_SPEEDS, _CRASH_PATHS = _build_fan_map()
 N_LEVELS = len(FAN_SPEEDS)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _is_safe(x: float, y: float) -> bool:
     """Recompute safety against current OBSTACLES (overrides stale CSV flags)."""
@@ -115,20 +132,29 @@ def load_csv(path: pathlib.Path) -> list[dict]:
 
 
 def load_all_runs(
-    fan_map: dict[tuple[int, str], list[pathlib.Path]]
+    fan_map: dict[tuple[int, str], list[pathlib.Path]],
+    crash_paths: set[pathlib.Path] | None = None,
 ) -> dict[tuple[int, str], list[list[dict]]]:
     """
     Load every CSV for each (speed, path_type) cell.
+
+    Crash files (identified via crash_paths) have every row marked with
+    r['_crash'] = True so that _run_stats counts them as violations regardless
+    of whether the partial Lighthouse samples happened to be in a safe zone.
 
     Returns:
         {(speed, path_type): [[rows_run1], [rows_run2], ...]}
         Each inner list contains only rows with t <= FWD_CUTOFF.
     """
+    crash_paths = crash_paths or set()
     result: dict[tuple[int, str], list[list[dict]]] = {}
     for key, paths in fan_map.items():
         runs = []
         for p in paths:
             rows = [r for r in load_csv(p) if r['t'] <= FWD_CUTOFF]
+            if p in crash_paths:
+                for r in rows:
+                    r['_crash'] = True
             if rows:
                 runs.append(rows)
         if runs:
@@ -146,50 +172,74 @@ def _min_obs_clearance(x: float, y: float) -> float:
     return min(dists)
 
 
+def _reached_goal(rows: list[dict]) -> bool:
+    """True if any sample in the last GOAL_WINDOW seconds is within GOAL_TOL of GOAL."""
+    if not rows:
+        return False
+    t_max = max(r['t'] for r in rows)
+    late = [r for r in rows if r['t'] >= t_max - GOAL_WINDOW]
+    return any(float(np.hypot(r['x'] - GOAL[0], r['y'] - GOAL[1])) <= GOAL_TOL for r in late)
+
+
 def _run_stats(runs: list[list[dict]], planned_xy: np.ndarray) -> dict:
     """
-    Compute per-run metrics and their mean ± std across runs.
+    Compute per-run metrics and summary statistics across runs.
 
-    Per-run metrics:
-        safety_rate  : fraction of safe samples * 100 (%)
-        min_clr      : minimum obstacle clearance across all samples (cm)
-        mean_dev     : mean nearest-waypoint deviation across samples (cm)
+    Safety model — binary, run-level:
+        A run is VIOLATED if the drone entered any obstacle (any Lighthouse sample
+        inside obstacle bounds) OR if the run file is flagged as a crash.
+        safety_pct = (n_runs - n_violated) / n_runs * 100
 
-    Returns dict with keys:
-        n_runs, sr_mean, sr_std, clr_mean, clr_std, dev_mean, dev_std,
-        n_samples_total, viols_total
+    Clearance — over non-violated runs only:
+        min obstacle clearance per run → mean ± std across safe runs.
+        (Violated runs are excluded: their clearance = 0 by definition and
+        is already captured in n_violated.)
+
+    Deviation — all runs including violated (partial paths still informative).
     """
-    sr_list, clr_list, dev_list = [], [], []
+    clr_all, dev_list, goal_list = [], [], []
     n_total = 0
-    viols_total = 0
+    n_violated = 0
 
     for rows in runs:
-        n = len(rows)
-        viols = sum(1 for r in rows if not r['safe'])
-        sr_list.append((n - viols) / n * 100.0)
-        clr_list.append(min(_min_obs_clearance(r['x'], r['y']) for r in rows))
-        devs = [
-            min(float(np.hypot(r['x'] - px, r['y'] - py)) for px, py in planned_xy) * 100.0
-            for r in rows
-        ]
+        is_crash = bool(rows[0].get('_crash', False)) if rows else False
+        violated = is_crash or any(not r['safe'] for r in rows)
+        n_violated += 1 if violated else 0
+        # Violated/crashed runs contribute 0 cm — avoids survivor bias where
+        # excluding them would make high-wind clearance look artificially high.
+        if violated or not rows:
+            clr_all.append(0.0)
+        else:
+            clr_all.append(min(_min_obs_clearance(r['x'], r['y']) for r in rows))
+        devs = [min(float(np.hypot(r['x'] - px, r['y'] - py)) for px, py in planned_xy) * 100.0 for r in rows]
         dev_list.append(sum(devs) / len(devs))
-        n_total += n
-        viols_total += viols
+        goal_list.append(_reached_goal(rows))
+        n_total += len(rows)
 
-    arr_sr  = np.array(sr_list)
-    arr_clr = np.array(clr_list)
+    arr_clr = np.array(clr_all)
     arr_dev = np.array(dev_list)
 
+    n_runs = len(runs)
+    safety_pct = (n_runs - n_violated) / n_runs * 100.0 if n_runs > 0 else 0.0
+
+    # Trajectory-level covariance: mean trace(Σ_t) across time bins, in cm²
+    # Σ_t is the 2×2 empirical covariance of (x, y) across runs at bin t.
+    # Crash runs are excluded inside _mean_path_with_cov.
+    _, _, cov_bins = _mean_path_with_cov(runs)
+    pos_cov_trace_cm2 = float(np.mean([np.trace(c) for c in cov_bins])) * 1e4 if cov_bins else 0.0
+
     return {
-        'n_runs':        len(runs),
-        'sr_mean':       float(arr_sr.mean()),
-        'sr_std':        float(arr_sr.std(ddof=1)) if len(runs) > 1 else 0.0,
-        'clr_mean':      float(arr_clr.mean()),
-        'clr_std':       float(arr_clr.std(ddof=1)) if len(runs) > 1 else 0.0,
-        'dev_mean':      float(arr_dev.mean()),
-        'dev_std':       float(arr_dev.std(ddof=1)) if len(runs) > 1 else 0.0,
-        'n_samples':     n_total,
-        'viols_total':   viols_total,
+        'n_runs': n_runs,
+        'n_violated': n_violated,
+        'safety_pct': safety_pct,
+        'clr_median': float(np.median(arr_clr)),
+        'clr_q25': float(np.percentile(arr_clr, 25)),
+        'clr_q75': float(np.percentile(arr_clr, 75)),
+        'dev_mean': float(arr_dev.mean()),
+        'dev_std': float(arr_dev.std(ddof=1)) if n_runs > 1 else 0.0,
+        'n_samples': n_total,
+        'goal_pct': sum(goal_list) / len(goal_list) * 100.0 if goal_list else 0.0,
+        'pos_cov_trace_cm2': pos_cov_trace_cm2,
     }
 
 
@@ -224,6 +274,29 @@ def ellipse_patch(b: GaussianBelief2D, n_std: float = 2.0, **kw) -> Ellipse:
     return Ellipse(xy=(b.mean[0], b.mean[1]), width=w, height=h, angle=angle, **kw)
 
 
+def add_obstacles_new(ax):
+    rectangles_data = [
+        (-6.5, 14, 13, 8, 'red'),
+        (-17, 52, 13, 9, 'blue'),
+        (4.5, 35, 9, 7.5, 'green'),
+    ]
+
+    for x, y, width, height, color in rectangles_data:
+        # Create the rectangle patch
+        rect = patches.Rectangle(
+            (x * 0.0254, y * 0.0254 - 1.5),
+            width * 0.0254,
+            height * 0.0254,
+            facecolor=color,
+            edgecolor='black',
+        )
+        # Add the patch to the axes
+        ax.add_patch(rect)
+    ax.set_xlim(-1.5, 1.5)
+    ax.set_ylim(-1.5, 1.5)
+    ax.set_aspect(1)
+
+
 def add_obstacles(ax):
     labels = [f'$\\mathcal{{O}}_{i}$' for i in range(1, len(OBSTACLES) + 1)]
     for (x0, x1, y0, y1), lbl in zip(OBSTACLES, labels):
@@ -238,7 +311,7 @@ def add_obstacles(ax):
             lbl,
             ha='center',
             va='center',
-            fontsize=7,
+            fontsize=12,
             color='#8b0000',
             fontweight='bold',
             zorder=3,
@@ -248,15 +321,15 @@ def add_obstacles(ax):
 def ieee_style():
     plt.rcParams.update(
         {
-            'font.family': 'serif',
-            'font.size': 8,
-            'axes.labelsize': 8,
-            'axes.titlesize': 8,
-            'xtick.labelsize': 7,
-            'ytick.labelsize': 7,
-            'legend.fontsize': 7,
+            'font.family': 'sans-serif',
+            'font.size': 16,
+            'axes.labelsize': 16,
+            'axes.titlesize': 18,
+            'xtick.labelsize': 14,
+            'ytick.labelsize': 14,
+            'legend.fontsize': 14,
             'figure.dpi': 150,
-            'lines.linewidth': 1.2,
+            'lines.linewidth': 2.0,
         }
     )
 
@@ -265,23 +338,49 @@ def ieee_style():
 # Fig 1: Planned paths + 2-sigma ellipses
 # =============================================================================
 
+import matplotlib.patches as patches
+
+
+def _scale(y_pos):
+    start_y = -1.5
+    scale_factor = 1.7 / 2.15
+    y_scaled = start_y + scale_factor * (y_pos - start_y)
+    return y_scaled
+
+
+def _descale(y_scaled):
+    """
+    Converts a physically measured (scaled) Y coordinate
+    back to the original intended coordinate system.
+    """
+    start_y = -1.5
+    # Use the same ratio from your scaling function
+    scale_factor = 1.7 / 2.15
+
+    # Inverse algebraic operation
+    y_original = start_y + (y_scaled - start_y) / scale_factor
+    return y_original
+
+
 def fig1_paths():
-    ieee_style()
+    # ieee_style()
     orig = sine_waypoints()
+    orig[:, 1] = _scale(orig[:, 1])
     opt = opt_waypoints()
+    opt[:, 1] = _scale(opt[:, 1])
     b_orig = propagate(orig)
     b_opt = propagate(opt)
 
     rho_orig = _eval_rho(b_orig)
     rho_opt = _eval_rho(b_opt)
 
-    fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 5.5), sharey=True)
     configs = [
         ('(a) Deterministic path', orig, b_orig, rho_orig, '#1f77b4', False),
         ('(b) pDSTL-optimised path', opt, b_opt, rho_opt, '#2ca02c', True),
     ]
     for ax, (title, wps, beliefs, rho, col, show_cov) in zip(axes, configs):
-        add_obstacles(ax)
+        add_obstacles_new(ax)
         if show_cov:
             for b in beliefs:
                 ax.add_patch(ellipse_patch(b, facecolor=col, alpha=0.12, edgecolor=col, lw=0.7, zorder=3))
@@ -295,12 +394,38 @@ def fig1_paths():
         ax.grid(True, alpha=0.25, lw=0.5)
         ax.legend(loc='lower right')
     axes[0].set_ylabel('$y$ (m)')
-    fig.suptitle('Path optimisation with 2$\\sigma$ covariance ellipses', y=1.01)
-    fig.tight_layout()
-    out = _OUT / 'fig1_paths.pdf'
-    fig.savefig(out, bbox_inches='tight')
-    print(f'Saved {out}')
-    plt.close(fig)
+
+    fig, ax = plt.subplots(1, 1)
+
+    # 2. Define the list of rectangles to plot (x, y, width, height, color)
+    rectangles_data = [
+        (-6.5, 14, 13, 8, 'red'),
+        (-17, 52, 13, 9, 'blue'),
+        (4.5, 35, 9, 7.5, 'green'),
+    ]
+
+    for x, y, width, height, color in rectangles_data:
+        # Create the rectangle patch
+        rect = patches.Rectangle(
+            (x * 0.0254, y * 0.0254 - 1.5),
+            width * 0.0254,
+            height * 0.0254,
+            facecolor=color,
+            edgecolor='black',
+        )
+        # Add the patch to the axes
+        ax.add_patch(rect)
+    ax.set_xlim(-1.5, 1.5)
+    ax.set_ylim(-1.5, 1.5)
+    ax.set_aspect(1)
+
+    plt.show()
+    # fig.suptitle('Path optimisation with 2$\\sigma$ covariance ellipses', y=1.01)
+    # fig.tight_layout()
+    # out = _OUT / 'fig1_paths.pdf'
+    # fig.savefig(out, bbox_inches='tight')
+    # print(f'Saved {out}')
+    # plt.close(fig)
 
 
 def _eval_rho(beliefs):
@@ -318,21 +443,21 @@ def _eval_rho(beliefs):
 # Reporting tables
 # =============================================================================
 
+
 def print_results_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None:
     """Print per-condition, per-speed statistics across all runs."""
-    w = 118
+    w = 110
     print('\n' + '=' * w)
-    print('EXPERIMENT RESULTS — mean ± std across 20 runs per cell')
+    print('EXPERIMENT RESULTS — binary run-level safety, mean ± std clearance over safe runs')
     print('=' * w)
 
     orig = sine_waypoints()
-    opt  = opt_waypoints()
+    opt = opt_waypoints()
 
     col = (
-        f"{'Fan':>4}  {'Runs':>4}  {'Samples':>7}  "
-        f"{'Safe% mean':>10}  {'Safe% std':>9}  {'Viols':>5}  "
-        f"{'MinClr mean':>11}  {'MinClr std':>10}  "
-        f"{'Dev mean':>8}  {'Dev std':>7}"
+        f'{"Fan":>4}  {"Runs":>4}  {"Safe%":>6}  {"Viols":>5}  {"Goal%":>6}  '
+        f'{"Clr med":>7}  {"Q25":>5}  {"Q75":>5}  '
+        f'{"Cov tr cm²":>10}  {"Dev mean":>8}  {"Dev std":>7}'
     )
 
     for path_label, path_key, planned in [('DETERMINISTIC', 'det', orig), ('pDSTL-OPTIMISED', 'pdstl', opt)]:
@@ -344,15 +469,16 @@ def print_results_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> No
         for spd in FAN_SPEEDS:
             runs = run_data.get((spd, path_key))
             if not runs:
-                print(f"  {spd:>4}  {'—':>4}")
+                print(f'  {spd:>4}  {"—":>4}')
                 continue
             s = _run_stats(runs, planned)
-            flag = ' ◄ VIOLATIONS' if s['viols_total'] > 0 else ''
+            flag = ' ◄ VIOLATIONS' if s['n_violated'] > 0 else ''
             print(
-                f"  {spd:>4}  {s['n_runs']:>4}  {s['n_samples']:>7}  "
-                f"{s['sr_mean']:>10.1f}  {s['sr_std']:>9.1f}  {s['viols_total']:>5}  "
-                f"{s['clr_mean']:>11.1f}  {s['clr_std']:>10.1f}  "
-                f"{s['dev_mean']:>8.1f}  {s['dev_std']:>7.1f}{flag}"
+                f'  {spd:>4}  {s["n_runs"]:>4}  {s["safety_pct"]:>6.1f}  {s["n_violated"]:>5}  '
+                f'{s["goal_pct"]:>6.1f}  '
+                f'{s["clr_median"]:>7.1f}  {s["clr_q25"]:>5.1f}  {s["clr_q75"]:>5.1f}  '
+                f'{s["pos_cov_trace_cm2"]:>10.3f}  '
+                f'{s["dev_mean"]:>8.1f}  {s["dev_std"]:>7.1f}{flag}'
             )
 
     print('\n' + '=' * w + '\n')
@@ -363,10 +489,11 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
     Print a booktabs LaTeX table:
       Fan speed | Det (Safe%, MinClr, Viols) | pDSTL (Safe%, MinClr, Viols)
 
-    Values shown as mean ± std across runs.
+    Safety: P(safe run) = (N - violations) / N * 100 % -- single number, no +/- std.
+    Clearance: mean ± std over non-violated runs only.
     """
     orig = sine_waypoints()
-    opt  = opt_waypoints()
+    opt = opt_waypoints()
 
     stats: dict = {}
     for spd in FAN_SPEEDS:
@@ -374,15 +501,15 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
             runs = run_data.get((spd, key))
             stats[(spd, key)] = _run_stats(runs, planned) if runs else None
 
-    def _cell(s, metric_mean, metric_std) -> str:
+    def _pct(s, key) -> str:
         if s is None:
             return r'\textemdash'
-        return f"${s[metric_mean]:.1f} \\pm {s[metric_std]:.1f}$"
+        return f'${s[key]:.1f}$'
 
     def _viols(s) -> str:
         if s is None:
             return r'\textemdash'
-        return str(s['viols_total'])
+        return str(s['n_violated'])
 
     def _bold(val: str, better: bool) -> str:
         return f'\\textbf{{{val}}}' if better else val
@@ -390,20 +517,21 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
     lines = [
         r'\begin{table}[t]',
         r'  \centering',
-        r'  \caption{Safety rate (\%), minimum obstacle clearance (cm),',
-        r'           and total constraint violations across 20 runs per cell',
+        r'  \caption{Safety rate (\%), goal-reached rate (\%), minimum obstacle clearance (cm),',
+        r'           and violation count across runs per cell,',
         r'           for the deterministic and pDSTL-optimised paths.',
-        r'           Values shown as mean\,$\pm$\,std across runs.}',
+        r'           Safety: $P(\text{safe run}) = (N-\text{violations})/N \times 100\,\%$.',
+        r'           Clearance: median across all runs (violated/crashed runs assigned 0\,cm).}',
         r'  \label{tab:results}',
         r'  \setlength{\tabcolsep}{4pt}',
-        r'  \begin{tabular}{c rr r rr r}',
+        r'  \begin{tabular}{c rrr r rrr r}',
         r'    \toprule',
-        r'    & \multicolumn{3}{c}{Deterministic}',
-        r'    & \multicolumn{3}{c}{pDSTL (ours)} \\',
-        r'    \cmidrule(lr){2-4}\cmidrule(lr){5-7}',
-        r'    \multirow{2}{*}{Fan}',
-        r'    & Safe\,(\%)  & Min.\,clr.\,(cm)  & Viols.',
-        r'    & Safe\,(\%)  & Min.\,clr.\,(cm)  & Viols. \\',
+        r'    & \multicolumn{4}{c}{Deterministic}',
+        r'    & \multicolumn{4}{c}{pDSTL (ours)} \\',
+        r'    \cmidrule(lr){2-5}\cmidrule(lr){6-9}',
+        r'    Fan',
+        r'    & Safe\,(\%)  & Goal\,(\%)  & Min.\,clr.\,(cm)  & Viols.',
+        r'    & Safe\,(\%)  & Goal\,(\%)  & Min.\,clr.\,(cm)  & Viols. \\',
         r'    \midrule',
     ]
 
@@ -412,25 +540,30 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
         p = stats[(spd, 'pdstl')]
         lbl = f'{spd}\\,(off)' if spd == 0 else str(spd)
 
-        sr_d  = _cell(d, 'sr_mean',  'sr_std')
-        sr_p  = _cell(p, 'sr_mean',  'sr_std')
-        cl_d  = _cell(d, 'clr_mean', 'clr_std')
-        cl_p  = _cell(p, 'clr_mean', 'clr_std')
-        vd    = _viols(d)
-        vp    = _viols(p)
+        sr_d = _pct(d, 'safety_pct')
+        sr_p = _pct(p, 'safety_pct')
+        gd = _pct(d, 'goal_pct')
+        gp = _pct(p, 'goal_pct')
+        cl_d = _pct(d, 'clr_median')
+        cl_p = _pct(p, 'clr_median')
+        vd = _viols(d)
+        vp = _viols(p)
 
         if d and p:
-            better_sr  = p['sr_mean']  >= d['sr_mean']
-            better_clr = p['clr_mean'] >= d['clr_mean']
-            better_vio = p['viols_total'] <= d['viols_total']
-            sr_p  = _bold(sr_p,  better_sr)
-            cl_p  = _bold(cl_p,  better_clr)
-            vp    = _bold(vp,    better_vio)
-            sr_d  = _bold(sr_d,  not better_sr)
-            cl_d  = _bold(cl_d,  not better_clr)
-            vd    = _bold(vd,    not better_vio)
+            better_sr = p['safety_pct'] >= d['safety_pct']
+            better_goal = p['goal_pct'] >= d['goal_pct']
+            better_clr = p['clr_median'] >= d['clr_median']
+            better_vio = p['n_violated'] <= d['n_violated']
+            sr_p = _bold(sr_p, better_sr)
+            gp = _bold(gp, better_goal)
+            cl_p = _bold(cl_p, better_clr)
+            vp = _bold(vp, better_vio)
+            sr_d = _bold(sr_d, not better_sr)
+            gd = _bold(gd, not better_goal)
+            cl_d = _bold(cl_d, not better_clr)
+            vd = _bold(vd, not better_vio)
 
-        lines.append(f'    {lbl} & {sr_d} & {cl_d} & {vd} & {sr_p} & {cl_p} & {vp} \\\\')
+        lines.append(f'    {lbl} & {sr_d} & {gd} & {cl_d} & {vd} & {sr_p} & {gp} & {cl_p} & {vp} \\\\')
 
     lines += [
         r'    \bottomrule',
@@ -447,101 +580,185 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
 # Fig 2: trajectories at min/max wind + safety rate bar chart
 # =============================================================================
 
-def _mean_path(rows: list[dict], bin_width: float = 0.3):
-    """Time-binned mean trajectory from actual Lighthouse samples."""
-    if not rows:
-        return [], []
-    rows_s = sorted(rows, key=lambda r: r['t'])
-    t_max = rows_s[-1]['t']
-    bins = np.arange(0, t_max + bin_width, bin_width)
-    xs, ys = [], []
-    for t0, t1 in zip(bins[:-1], bins[1:]):
-        bucket = [r for r in rows_s if t0 <= r['t'] < t1]
-        if bucket:
-            xs.append(sum(r['x'] for r in bucket) / len(bucket))
-            ys.append(sum(r['y'] for r in bucket) / len(bucket))
-    return xs, ys
 
-
-def fig2_experiment(flat_data: dict[tuple[int, str], list[dict]]):
+def _mean_path_with_cov(run_rows_list: list[list[dict]], bin_width: float = 0.3) -> tuple[list, list, list]:
     """
-    Args:
-        flat_data: {(speed, path_type): [all rows pooled across all runs]}
+    Ensemble mean path and 2×2 sample covariance at each time bin.
+
+    Each run is time-binned independently (equal weight per run).
+    At each bin we have one (x, y) per run; np.cov gives the 2×2 empirical
+    covariance across the 20 runs — directly analogous to the pDSTL model
+    covariance in fig1, but computed from actual flight data.
+
+    Returns:
+        mean_x, mean_y — ensemble mean position at each time bin
+        cov_list       — list of (2, 2) ndarrays; cov_list[i] is the
+                         cross-run covariance matrix at bin i
+    """
+    # Exclude crash runs — their truncated paths would bias late time bins.
+    run_rows_list = [rows for rows in run_rows_list if rows and not rows[0].get('_crash', False)]
+    if not run_rows_list:
+        return [], [], []
+    t_maxes = [max(r['t'] for r in rows) for rows in run_rows_list if rows]
+    if not t_maxes:
+        return [], [], []
+    t_max = min(t_maxes)
+    bins = np.arange(0, t_max + bin_width, bin_width)
+    n_bins = len(bins) - 1
+    if n_bins < 1:
+        return [], [], []
+
+    per_x: list[list] = []
+    per_y: list[list] = []
+    for rows in run_rows_list:
+        rx, ry = [], []
+        for t0, t1 in zip(bins[:-1], bins[1:]):
+            bucket = [r for r in rows if t0 <= r['t'] < t1]
+            if bucket:
+                rx.append(float(np.mean([r['x'] for r in bucket])))
+                ry.append(float(np.mean([r['y'] for r in bucket])))
+            else:
+                rx.append(None)
+                ry.append(None)
+        per_x.append(rx)
+        per_y.append(ry)
+
+    mean_x, mean_y, cov_list = [], [], []
+    for b in range(n_bins):
+        xs_b = [per_x[i][b] for i in range(len(run_rows_list)) if per_x[i][b] is not None]
+        ys_b = [per_y[i][b] for i in range(len(run_rows_list)) if per_y[i][b] is not None]
+        if len(xs_b) < 2:
+            continue
+        mean_x.append(float(np.mean(xs_b)))
+        mean_y.append(float(np.mean(ys_b)))
+        cov_list.append(np.cov(xs_b, ys_b, ddof=1))  # (2, 2) ndarray
+
+    return mean_x, mean_y, cov_list
+
+
+def _cov_ellipse_patch(mx: float, my: float, cov: np.ndarray, n_std: float = 2.0, **kw) -> Ellipse:
+    """Return a matplotlib Ellipse for the n-sigma empirical covariance region."""
+    vals, vecs = np.linalg.eigh(cov)
+    order = vals.argsort()[::-1]
+    vals, vecs = vals[order], vecs[:, order]
+    angle = float(np.degrees(np.arctan2(*vecs[:, 0][::-1])))
+    w, h = 2.0 * n_std * np.sqrt(np.maximum(vals, 0.0))
+    return Ellipse(xy=(mx, my), width=w, height=h, angle=angle, **kw)
+
+
+def fig2_experiment(run_data: dict[tuple[int, str], list[list[dict]]]):
+    """
+    1x2 figure: left = Deterministic, right = pDSTL.
+
+    Both panels use identical arena limits (_XLIM, _YLIM) so set_aspect('equal')
+    produces the same physical panel size on both sides.
+
+    Each panel shows:
+      - Light-grey scatter of all actual Lighthouse samples (all 20 runs, all
+        fan speeds pooled) — background spread of real flight positions.
+      - Ensemble mean path per fan speed (plasma colormap), with 2σ empirical
+        covariance ellipses drawn every 4 time bins (~1.2 s spacing).
+        The ellipses are the cross-run 2×2 covariance of (x, y) at each bin.
+      - Obstacle rectangles, start (^) and goal (*).
+
+    Single figure-level legend below both panels.
     """
     ieee_style()
 
-    orig = sine_waypoints()
-    opt = opt_waypoints()
-
-    # Safety rate per cell (over all pooled rows)
-    safety: dict[tuple[int, str], float] = {}
-    for (spd, pt), rows in flat_data.items():
-        n = len(rows)
-        viol = sum(1 for r in rows if not r['safe'])
-        safety[(spd, pt)] = (n - viol) / n * 100 if n else 0.0
-
-    fig = plt.figure(figsize=(6.5, 4.5))
-    gs = fig.add_gridspec(2, 2, hspace=0.45, wspace=0.35)
-    ax_l0 = fig.add_subplot(gs[0, 0])  # trajectories fan=0
-    ax_ln = fig.add_subplot(gs[0, 1])  # trajectories fan=max
-    ax_bar = fig.add_subplot(gs[1, :])  # bar chart
-
-    col_det = '#1f77b4'
-    col_pdstl = '#2ca02c'
+    cmap = plt.get_cmap('plasma')
+    n_spd = max(len(FAN_SPEEDS), 1)
+    speed_colour = {spd: cmap(i / (n_spd - 1) if n_spd > 1 else 0.0) for i, spd in enumerate(FAN_SPEEDS)}
     col_viol = '#d62728'
 
-    def _traj_panel(ax, spd, title):
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 6.5))
+    handle_list: list = []
+    label_list: list = []
+    has_viols = False
+
+    for ax, pt, panel_lbl in zip(
+        axes,
+        ['det', 'pdstl'],
+        ['(a) Deterministic', '(b) pDSTL'],
+    ):
         add_obstacles(ax)
-        for pt, col, lbl, cmd in [
-            ('det', col_det, 'Det.', orig),
-            ('pdstl', col_pdstl, 'pDSTL', opt),
-        ]:
-            rows = flat_data.get((spd, pt), [])
-            safe_x = [r['x'] for r in rows if r['safe']]
-            safe_y = [r['y'] for r in rows if r['safe']]
-            viol_x = [r['x'] for r in rows if not r['safe']]
-            viol_y = [r['y'] for r in rows if not r['safe']]
-            ax.plot(cmd[:, 0], cmd[:, 1], '--', color=col, lw=0.8, alpha=0.5, zorder=3)
-            ax.scatter(safe_x, safe_y, s=4, color=col, alpha=0.25, zorder=4)
-            if viol_x:
-                ax.scatter(viol_x, viol_y, s=18, color=col_viol, marker='x', lw=1.0, zorder=5,
-                           label=f'{lbl} violation')
-            mx, my = _mean_path(rows)
+
+        # Background scatter — pool all runs / all speeds for this condition
+        all_rows = [r for spd in FAN_SPEEDS for runs in run_data.get((spd, pt), []) for r in runs]
+        ax.scatter(
+            [r['x'] for r in all_rows if r['safe']],
+            [r['y'] for r in all_rows if r['safe']],
+            s=2,
+            color='#cccccc',
+            alpha=0.15,
+            zorder=3,
+            rasterized=True,
+        )
+        viol_x = [r['x'] for r in all_rows if not r['safe']]
+        viol_y = [r['y'] for r in all_rows if not r['safe']]
+        if viol_x:
+            ax.scatter(viol_x, viol_y, s=14, color=col_viol, marker='x', lw=1.0, alpha=0.70, zorder=4, rasterized=True)
+            has_viols = True
+
+        # Ensemble mean path + 2σ covariance ellipses per fan speed
+        for spd in FAN_SPEEDS:
+            runs = run_data.get((spd, pt), [])
+            mx, my, cov_list = _mean_path_with_cov(runs)
             if mx:
-                ax.plot(mx, my, '-', color=col, lw=1.8, zorder=6, label=f'{lbl} mean')
-        ax.plot(*START, '^', color='#2ca02c', ms=6, zorder=6)
-        ax.plot(*GOAL, '*', color='#d62728', ms=8, zorder=6)
-        ax.set_title(title, pad=3)
-        ax.set_xlabel('$x$ (m)')
+                col = speed_colour[spd]
+                # Draw 2σ ellipses at every 4th bin (~1.2 s spacing)
+                for i in range(0, len(mx), 4):
+                    e = _cov_ellipse_patch(
+                        mx[i],
+                        my[i],
+                        cov_list[i],
+                        n_std=2.0,
+                        facecolor=col,
+                        alpha=0.22,
+                        edgecolor=col,
+                        linewidth=0.6,
+                        zorder=5,
+                    )
+                    ax.add_patch(e)
+                (line,) = ax.plot(mx, my, '-', color=col, lw=2.0, zorder=6)
+                if pt == 'det':  # collect legend handles once
+                    handle_list.append(line)
+                    label_list.append(str(spd / 1000))
+
+        ax.plot(*START, '^', color='#2ca02c', ms=7, zorder=7)
+        ax.plot(*GOAL, '*', color='#d62728', ms=9, zorder=7)
+
+        ax.set_xlim(*_XLIM)
+        ax.set_ylim(*_YLIM)
         ax.set_aspect('equal')
-        ax.grid(True, alpha=0.2, lw=0.4)
-        ax.legend(loc='lower right', markerscale=1.5, handlelength=1)
+        ax.set_title(panel_lbl, pad=4)
+        ax.set_xlabel('$x$ (m)')
+        ax.grid(True, alpha=0.25, lw=0.5)
 
-    _traj_panel(ax_l0, FAN_SPEEDS[0],  f'(a) Fan speed {FAN_SPEEDS[0]} (off)')
-    _traj_panel(ax_ln, FAN_SPEEDS[-1], f'(b) Fan speed {FAN_SPEEDS[-1]} (max)')
-    ax_l0.set_ylabel('$y$ (m)')
+    axes[0].set_ylabel('$y$ (m)')
 
-    # Bar chart — all fan speeds
-    sr_det   = [safety.get((spd, 'det'),   0.0) for spd in FAN_SPEEDS]
-    sr_pdstl = [safety.get((spd, 'pdstl'), 0.0) for spd in FAN_SPEEDS]
-    x = np.arange(N_LEVELS)
-    w = 0.35
-    bars_d = ax_bar.bar(x - w / 2, sr_det,   w, label='Deterministic', color=col_det,   alpha=0.85, edgecolor='k', lw=0.5)
-    bars_p = ax_bar.bar(x + w / 2, sr_pdstl, w, label='pDSTL',         color=col_pdstl, alpha=0.85, edgecolor='k', lw=0.5)
-    ax_bar.axhline(ALPHA * 100, color='#d62728', lw=1.2, ls='--', label=f'$\\alpha = {ALPHA}$')
-    for bar in list(bars_d) + list(bars_p):
-        h = bar.get_height()
-        ax_bar.text(bar.get_x() + bar.get_width() / 2, h + 0.2, f'{h:.0f}',
-                    ha='center', va='bottom', fontsize=5.5)
-    ax_bar.set_xticks(x)
-    ax_bar.set_xticklabels([f'{s}\n(off)' if s == 0 else str(s) for s in FAN_SPEEDS])
-    ax_bar.set_xlabel('Fan speed')
-    ax_bar.set_ylabel('Safety rate (%)')
-    _ymin = max(0, min(sr_det + sr_pdstl) - 5)
-    ax_bar.set_ylim(_ymin, 102.5)
-    ax_bar.set_title('(c) Empirical safety rate vs fan speed', pad=3)
-    ax_bar.legend(loc='lower left')
-    ax_bar.grid(True, axis='y', alpha=0.25, lw=0.5)
+    # Build shared legend: fan speed lines + Start / Goal / Violation proxies
+    handle_list += [
+        Line2D([], [], color='#2ca02c', marker='^', ls='None', ms=7),
+        Line2D([], [], color='#d62728', marker='*', ls='None', ms=8),
+    ]
+    label_list += ['Start', 'Goal']
+    if has_viols:
+        handle_list.append(Line2D([], [], color=col_viol, marker='x', ls='None', ms=5, lw=1.0))
+        label_list.append('Violation')
+
+    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.13)
+    fig.legend(
+        handle_list,
+        label_list,
+        loc='lower center',
+        ncol=len(handle_list),
+        bbox_to_anchor=(0.5, 0.01),
+        fontsize=14,
+        handlelength=1.8,
+        frameon=True,
+        borderpad=0.6,
+    )
 
     out = _OUT / 'fig2_experiment.pdf'
     fig.savefig(out, bbox_inches='tight')
@@ -553,6 +770,7 @@ def fig2_experiment(flat_data: dict[tuple[int, str], list[dict]]):
 # Fig 3: Min obstacle clearance vs fan speed (mean ± std across runs)
 # =============================================================================
 
+
 def fig3_clearance(run_data: dict[tuple[int, str], list[list[dict]]]):
     """
     Args:
@@ -561,38 +779,46 @@ def fig3_clearance(run_data: dict[tuple[int, str], list[list[dict]]]):
     ieee_style()
 
     def _per_run_min_clr(runs):
-        """Per-run minimum clearance (cm) list."""
+        """Per-run minimum clearance (cm); violated/crashed runs contribute 0.0."""
         clrs = []
         for rows in runs:
-            if rows:
+            is_crash = bool(rows[0].get('_crash', False)) if rows else False
+            violated = is_crash or (not rows) or any(not r['safe'] for r in rows)
+            if violated:
+                clrs.append(0.0)
+            else:
                 clrs.append(min(_min_obs_clearance(r['x'], r['y']) for r in rows))
         return np.array(clrs) if clrs else np.array([0.0])
 
-    col_det   = '#1f77b4'
+    col_det = '#1f77b4'
     col_pdstl = '#2ca02c'
 
-    clr_det_mean, clr_det_std     = [], []
-    clr_pdstl_mean, clr_pdstl_std = [], []
+    clr_det_med, clr_det_q25, clr_det_q75 = [], [], []
+    clr_pdstl_med, clr_pdstl_q25, clr_pdstl_q75 = [], [], []
 
     for spd in FAN_SPEEDS:
-        for pt, mean_list, std_list in [('det', clr_det_mean, clr_det_std),
-                                         ('pdstl', clr_pdstl_mean, clr_pdstl_std)]:
+        for pt, med_list, q25_list, q75_list in [
+            ('det', clr_det_med, clr_det_q25, clr_det_q75),
+            ('pdstl', clr_pdstl_med, clr_pdstl_q25, clr_pdstl_q75),
+        ]:
             runs = run_data.get((spd, pt), [])
             arr = _per_run_min_clr(runs)
-            mean_list.append(arr.mean())
-            std_list.append(arr.std(ddof=1) if len(arr) > 1 else 0.0)
+            med_list.append(float(np.median(arr)))
+            q25_list.append(float(np.percentile(arr, 25)))
+            q75_list.append(float(np.percentile(arr, 75)))
 
-    fig, ax = plt.subplots(figsize=(4.0, 2.8))
-    ax.errorbar(FAN_SPEEDS, clr_det_mean,   yerr=clr_det_std,   fmt='o-', color=col_det,
-                capsize=3, label='Deterministic', ms=5)
-    ax.errorbar(FAN_SPEEDS, clr_pdstl_mean, yerr=clr_pdstl_std, fmt='s-', color=col_pdstl,
-                capsize=3, label='pDSTL', ms=5)
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    for med, q25, q75, col, marker, lbl in [
+        (clr_det_med, clr_det_q25, clr_det_q75, col_det, 'o', 'Deterministic'),
+        (clr_pdstl_med, clr_pdstl_q25, clr_pdstl_q75, col_pdstl, 's', 'pDSTL'),
+    ]:
+        ax.plot(FAN_SPEEDS, med, f'{marker}-', color=col, lw=2.0, ms=5, label=lbl)
+        ax.fill_between(FAN_SPEEDS, q25, q75, color=col, alpha=0.18)
+
     ax.axhline(0, color='#d62728', lw=1.0, ls='--', label='Obstacle boundary')
-    ax.fill_between(FAN_SPEEDS, 0, min(*clr_det_mean, *clr_pdstl_mean) - 0.5,
-                    color='#d62728', alpha=0.10)
     ax.set_xlabel('Fan speed')
     ax.set_ylabel('Min. obstacle clearance (cm)')
-    ax.set_title('Minimum obstacle clearance vs fan speed\n(mean ± std across runs)', pad=3)
+    ax.set_title('Minimum obstacle clearance vs fan speed\n(median + IQR shading, 0 = violation)', pad=3)
     ax.set_xticks(FAN_SPEEDS)
     ax.set_xticklabels([f'{s}\n(off)' if s == 0 else str(s) for s in FAN_SPEEDS])
     ax.legend()
@@ -608,10 +834,14 @@ def fig3_clearance(run_data: dict[tuple[int, str], list[list[dict]]]):
 # Fig 4: All fan speeds overlaid — one panel per configuration
 # =============================================================================
 
-def fig4_all_speeds(flat_data: dict[tuple[int, str], list[dict]]):
+
+def fig4_all_speeds(run_data: dict[tuple[int, str], list[list[dict]]]):
     """
-    Args:
-        flat_data: {(speed, path_type): [all rows pooled across all runs]}
+    1x2 figure: ensemble mean paths ± 1-sigma band at all fan speeds.
+
+    Identical arena limits and equal-weight per-run averaging as fig2.
+    Legend labels use normalised values: spd / 1000
+    (fan 0 → 0.0, fan 6 → 0.006, fan 12 → 0.012, fan 18 → 0.018).
     """
     ieee_style()
 
@@ -619,34 +849,71 @@ def fig4_all_speeds(flat_data: dict[tuple[int, str], list[dict]]):
     n = max(len(FAN_SPEEDS), 1)
     speed_colour = {spd: cmap(i / (n - 1) if n > 1 else 0.0) for i, spd in enumerate(FAN_SPEEDS)}
 
-    fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.8), sharey=True)
-    titles = ['(a) Deterministic — all fan speeds', '(b) pDSTL — all fan speeds']
-    path_keys = ['det', 'pdstl']
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 6.5))
+    handle_list: list = []
+    label_list: list = []
 
-    for ax, pt, title in zip(axes, path_keys, titles):
+    for ax, pt, panel_lbl in zip(
+        axes,
+        ['det', 'pdstl'],
+        ['(a) Deterministic', '(b) pDSTL'],
+    ):
         add_obstacles(ax)
         for spd in FAN_SPEEDS:
-            rows = flat_data.get((spd, pt), [])
-            mx, my = _mean_path(rows)
+            runs = run_data.get((spd, pt), [])
+            mx, my, cov_list = _mean_path_with_cov(runs)
             if mx:
-                lbl = f'fan {spd}' + (' (off)' if spd == 0 else '')
-                ax.plot(mx, my, '-', color=speed_colour[spd], lw=1.4, label=lbl, zorder=4)
+                col = speed_colour[spd]
+                for i in range(0, len(mx), 4):
+                    e = _cov_ellipse_patch(
+                        mx[i],
+                        my[i],
+                        cov_list[i],
+                        n_std=2.0,
+                        facecolor=col,
+                        alpha=0.20,
+                        edgecolor=col,
+                        linewidth=0.6,
+                        zorder=4,
+                    )
+                    ax.add_patch(e)
+                (line,) = ax.plot(mx, my, '-', color=col, lw=2.0, zorder=5)
+                if pt == 'det':  # collect legend handles once
+                    handle_list.append(line)
+                    label_list.append(str(spd / 1000))
+
         ax.plot(*START, '^', color='#2ca02c', ms=7, zorder=6)
         ax.plot(*GOAL, '*', color='#d62728', ms=9, zorder=6)
-        ax.set_title(title, pad=3)
-        ax.set_xlabel('$x$ (m)')
+
+        ax.set_xlim(*_XLIM)
+        ax.set_ylim(*_YLIM)
         ax.set_aspect('equal')
+        ax.set_title(panel_lbl, pad=4)
+        ax.set_xlabel('$x$ (m)')
         ax.grid(True, alpha=0.25, lw=0.5)
-        ax.legend(loc='lower right', fontsize=6, handlelength=1.2)
 
     axes[0].set_ylabel('$y$ (m)')
 
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=FAN_SPEEDS[0], vmax=FAN_SPEEDS[-1]))
-    sm.set_array([])
-    fig.colorbar(sm, ax=axes, orientation='vertical', label='Fan speed', shrink=0.85, pad=0.02)
+    handle_list += [
+        Line2D([], [], color='#2ca02c', marker='^', ls='None', ms=7),
+        Line2D([], [], color='#d62728', marker='*', ls='None', ms=8),
+    ]
+    label_list += ['Start', 'Goal']
 
-    fig.suptitle('Actual mean trajectories at all fan speeds', y=1.01)
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.13)
+    fig.legend(
+        handle_list,
+        label_list,
+        loc='lower center',
+        ncol=len(handle_list),
+        bbox_to_anchor=(0.5, 0.01),
+        fontsize=14,
+        handlelength=1.8,
+        frameon=True,
+        borderpad=0.6,
+    )
+
     out = _OUT / 'fig4_all_speeds.pdf'
     fig.savefig(out, bbox_inches='tight')
     print(f'Saved {out}')
@@ -655,26 +922,18 @@ def fig4_all_speeds(flat_data: dict[tuple[int, str], list[dict]]):
 
 # =============================================================================
 if __name__ == '__main__':
-    # Load per-run data for statistical analysis
-    RUN_DATA = load_all_runs(FAN_MAP)
-
-    # Flat (pooled) data for trajectory figures
-    FLAT_DATA: dict[tuple[int, str], list[dict]] = {
-        k: [r for run in runs for r in run]
-        for k, runs in RUN_DATA.items()
-    }
+    RUN_DATA = load_all_runs(FAN_MAP, _CRASH_PATHS)
 
     if not RUN_DATA:
         print('[plot_results] No log files found in', _LOGS)
-        print('  Expected filename format: <condition>_fan<XX>_run<NN>_<ts>_actual.csv')
+        print('  Expected: <condition>_fan<XX>_run<NN>_<ts>_actual.csv')
     else:
-        print(f'[plot_results] Found {sum(len(v) for v in RUN_DATA.values())} runs '
-              f'across {len(RUN_DATA)} cells.')
+        print(f'[plot_results] Found {sum(len(v) for v in RUN_DATA.values())} runs across {len(RUN_DATA)} cells.')
 
     fig1_paths()
-    print_results_table(RUN_DATA)
-    print_latex_table(RUN_DATA)
-    fig2_experiment(FLAT_DATA)
-    fig3_clearance(RUN_DATA)
-    fig4_all_speeds(FLAT_DATA)
-    print(f'\nAll figures saved to {_OUT}/')
+    # print_results_table(RUN_DATA)
+    # print_latex_table(RUN_DATA)
+    # fig2_experiment(RUN_DATA)
+    # fig3_clearance(RUN_DATA)
+    # fig4_all_speeds(RUN_DATA)
+    # print(f'\nAll figures saved to {_OUT}/')
