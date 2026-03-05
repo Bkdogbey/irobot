@@ -44,15 +44,15 @@ START = np.array([0.0, -1.5])
 GOAL = np.array([0.489, 0.65])
 N_WP = 10
 OBSTACLES = [
-    (-0.25, 0.25, -1.05, -0.85),  # OBS-1
-    (-0.45, 0.05, 0.10, 0.35),  # OBS-2
-    (0.25, 0.50, -0.25, 0.10),  # OBS-3
+    (-0.165, 0.165, -1.144, -0.941),  # OBS-1 (red)
+    (-0.432, -0.102, -0.179, 0.049),  # OBS-2 (blue)
+    (0.114, 0.343, -0.611, -0.421),  # OBS-3 (green)
 ]
 SIGMA0 = np.eye(2) * (0.010**2)
 SIGMA_TOTAL_STEP = float(np.sqrt(0.010**2 + 0.020**2))
 DT = 0.1
 ALPHA = 0.90
-FWD_CUTOFF = 7.0
+FWD_CUTOFF = 11.0  # s — covers full forward flight (logger starts ~3 s before first waypoint)
 GOAL_TOL = 0.15  # metres — within 15 cm of GOAL counts as reached
 GOAL_WINDOW = 2.0  # seconds — look at samples in the last 2 s of each run
 # Common arena limits applied to all trajectory panels so both panels are identical in size.
@@ -155,6 +155,14 @@ def load_all_runs(
             if p in crash_paths:
                 for r in rows:
                     r['_crash'] = True
+            # Store per-run goal from last row of commanded CSV
+            cmd_p = p.with_name(p.name.replace('_actual.csv', '_commanded.csv'))
+            if rows and cmd_p.exists():
+                with cmd_p.open() as fh:
+                    cmd_rows = list(csv.DictReader(fh))
+                if cmd_rows:
+                    rows[0]['_goal_x'] = float(cmd_rows[-1]['x'])
+                    rows[0]['_goal_y'] = float(cmd_rows[-1]['y'])
             if rows:
                 runs.append(rows)
         if runs:
@@ -173,72 +181,52 @@ def _min_obs_clearance(x: float, y: float) -> float:
 
 
 def _reached_goal(rows: list[dict]) -> bool:
-    """True if any sample in the last GOAL_WINDOW seconds is within GOAL_TOL of GOAL."""
+    """True if any sample in the last GOAL_WINDOW seconds is within GOAL_TOL of per-run goal."""
     if not rows:
         return False
+    gx = rows[0].get('_goal_x', GOAL[0])
+    gy = rows[0].get('_goal_y', GOAL[1])
     t_max = max(r['t'] for r in rows)
     late = [r for r in rows if r['t'] >= t_max - GOAL_WINDOW]
-    return any(float(np.hypot(r['x'] - GOAL[0], r['y'] - GOAL[1])) <= GOAL_TOL for r in late)
+    return any(float(np.hypot(r['x'] - gx, r['y'] - gy)) <= GOAL_TOL for r in late)
 
 
 def _run_stats(runs: list[list[dict]], planned_xy: np.ndarray) -> dict:
     """
-    Compute per-run metrics and summary statistics across runs.
-
-    Safety model — binary, run-level:
-        A run is VIOLATED if the drone entered any obstacle (any Lighthouse sample
-        inside obstacle bounds) OR if the run file is flagged as a crash.
-        safety_pct = (n_runs - n_violated) / n_runs * 100
-
-    Clearance — over non-violated runs only:
-        min obstacle clearance per run → mean ± std across safe runs.
-        (Violated runs are excluded: their clearance = 0 by definition and
-        is already captured in n_violated.)
-
-    Deviation — all runs including violated (partial paths still informative).
+    A run is VIOLATED if: obstacle entered, OR flagged crash, OR goal not reached.
+    Violated runs are assigned 0 cm clearance.
+    Clearance reported as mean ± std across all runs (0 for violated).
     """
-    clr_all, dev_list, goal_list = [], [], []
+    clr_all, dev_list = [], []
     n_total = 0
     n_violated = 0
 
     for rows in runs:
         is_crash = bool(rows[0].get('_crash', False)) if rows else False
-        violated = is_crash or any(not r['safe'] for r in rows)
+        reached = _reached_goal(rows)
+        violated = is_crash or any(not r['safe'] for r in rows) or not reached
         n_violated += 1 if violated else 0
-        # Violated/crashed runs contribute 0 cm — avoids survivor bias where
-        # excluding them would make high-wind clearance look artificially high.
-        if violated or not rows:
-            clr_all.append(0.0)
-        else:
-            clr_all.append(min(_min_obs_clearance(r['x'], r['y']) for r in rows))
+        clr_all.append(0.0 if violated else min(_min_obs_clearance(r['x'], r['y']) for r in rows))
         devs = [min(float(np.hypot(r['x'] - px, r['y'] - py)) for px, py in planned_xy) * 100.0 for r in rows]
         dev_list.append(sum(devs) / len(devs))
-        goal_list.append(_reached_goal(rows))
         n_total += len(rows)
 
     arr_clr = np.array(clr_all)
     arr_dev = np.array(dev_list)
-
     n_runs = len(runs)
-    safety_pct = (n_runs - n_violated) / n_runs * 100.0 if n_runs > 0 else 0.0
 
-    # Trajectory-level covariance: mean trace(Σ_t) across time bins, in cm²
-    # Σ_t is the 2×2 empirical covariance of (x, y) across runs at bin t.
-    # Crash runs are excluded inside _mean_path_with_cov.
     _, _, cov_bins = _mean_path_with_cov(runs)
     pos_cov_trace_cm2 = float(np.mean([np.trace(c) for c in cov_bins])) * 1e4 if cov_bins else 0.0
 
     return {
         'n_runs': n_runs,
         'n_violated': n_violated,
-        'safety_pct': safety_pct,
-        'clr_median': float(np.median(arr_clr)),
-        'clr_q25': float(np.percentile(arr_clr, 25)),
-        'clr_q75': float(np.percentile(arr_clr, 75)),
+        'success_pct': (n_runs - n_violated) / n_runs * 100.0 if n_runs > 0 else 0.0,
+        'clr_mean': float(arr_clr.mean()),
+        'clr_std': float(arr_clr.std(ddof=1)) if n_runs > 1 else 0.0,
         'dev_mean': float(arr_dev.mean()),
         'dev_std': float(arr_dev.std(ddof=1)) if n_runs > 1 else 0.0,
         'n_samples': n_total,
-        'goal_pct': sum(goal_list) / len(goal_list) * 100.0 if goal_list else 0.0,
         'pos_cov_trace_cm2': pos_cov_trace_cm2,
     }
 
@@ -274,37 +262,12 @@ def ellipse_patch(b: GaussianBelief2D, n_std: float = 2.0, **kw) -> Ellipse:
     return Ellipse(xy=(b.mean[0], b.mean[1]), width=w, height=h, angle=angle, **kw)
 
 
-def add_obstacles_new(ax):
-    rectangles_data = [
-        (-6.5, 14, 13, 8, 'red'),
-        (-17, 52, 13, 9, 'blue'),
-        (4.5, 35, 9, 7.5, 'green'),
-    ]
-
-    for x, y, width, height, color in rectangles_data:
-        # Create the rectangle patch
-        rect = patches.Rectangle(
-            (x * 0.0254, y * 0.0254 - 1.5),
-            width * 0.0254,
-            height * 0.0254,
-            facecolor=color,
-            edgecolor='black',
-        )
-        # Add the patch to the axes
-        ax.add_patch(rect)
-    ax.set_xlim(-1.5, 1.5)
-    ax.set_ylim(-1.5, 1.5)
-    ax.set_aspect(1)
-
-
 def add_obstacles(ax):
+    colors = ['#d62728', '#1f77b4', '#2ca02c']
+    edge_colors = ['#8b0000', '#08519c', '#006d2c']
     labels = [f'$\\mathcal{{O}}_{i}$' for i in range(1, len(OBSTACLES) + 1)]
-    for (x0, x1, y0, y1), lbl in zip(OBSTACLES, labels):
-        ax.add_patch(
-            Rectangle(
-                (x0, y0), x1 - x0, y1 - y0, facecolor='#d62728', alpha=0.30, edgecolor='#8b0000', lw=1.2, zorder=2
-            )
-        )
+    for (x0, x1, y0, y1), lbl, fc, ec in zip(OBSTACLES, labels, colors, edge_colors):
+        ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, facecolor=fc, alpha=0.30, edgecolor=ec, lw=1.2, zorder=2))
         ax.text(
             (x0 + x1) / 2,
             (y0 + y1) / 2,
@@ -312,7 +275,7 @@ def add_obstacles(ax):
             ha='center',
             va='center',
             fontsize=12,
-            color='#8b0000',
+            color=ec,
             fontweight='bold',
             zorder=3,
         )
@@ -338,36 +301,11 @@ def ieee_style():
 # Fig 1: Planned paths + 2-sigma ellipses
 # =============================================================================
 
-import matplotlib.patches as patches
-
-
-def _scale(y_pos):
-    start_y = -1.5
-    scale_factor = 1.7 / 2.15
-    y_scaled = start_y + scale_factor * (y_pos - start_y)
-    return y_scaled
-
-
-def _descale(y_scaled):
-    """
-    Converts a physically measured (scaled) Y coordinate
-    back to the original intended coordinate system.
-    """
-    start_y = -1.5
-    # Use the same ratio from your scaling function
-    scale_factor = 1.7 / 2.15
-
-    # Inverse algebraic operation
-    y_original = start_y + (y_scaled - start_y) / scale_factor
-    return y_original
-
 
 def fig1_paths():
-    # ieee_style()
+    ieee_style()
     orig = sine_waypoints()
-    orig[:, 1] = _scale(orig[:, 1])
     opt = opt_waypoints()
-    opt[:, 1] = _scale(opt[:, 1])
     b_orig = propagate(orig)
     b_opt = propagate(opt)
 
@@ -380,7 +318,7 @@ def fig1_paths():
         ('(b) pDSTL-optimised path', opt, b_opt, rho_opt, '#2ca02c', True),
     ]
     for ax, (title, wps, beliefs, rho, col, show_cov) in zip(axes, configs):
-        add_obstacles_new(ax)
+        add_obstacles(ax)
         if show_cov:
             for b in beliefs:
                 ax.add_patch(ellipse_patch(b, facecolor=col, alpha=0.12, edgecolor=col, lw=0.7, zorder=3))
@@ -390,42 +328,18 @@ def fig1_paths():
         sat = 'satisfied' if rho >= ALPHA else 'not satisfied'
         ax.set_title(f'{title}\n$\\rho={rho:.4f}$, $\\alpha={ALPHA}$ ({sat})', pad=4)
         ax.set_xlabel('$x$ (m)')
+        ax.set_xlim(*_XLIM)
+        ax.set_ylim(*_YLIM)
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.25, lw=0.5)
         ax.legend(loc='lower right')
     axes[0].set_ylabel('$y$ (m)')
 
-    fig, ax = plt.subplots(1, 1)
-
-    # 2. Define the list of rectangles to plot (x, y, width, height, color)
-    rectangles_data = [
-        (-6.5, 14, 13, 8, 'red'),
-        (-17, 52, 13, 9, 'blue'),
-        (4.5, 35, 9, 7.5, 'green'),
-    ]
-
-    for x, y, width, height, color in rectangles_data:
-        # Create the rectangle patch
-        rect = patches.Rectangle(
-            (x * 0.0254, y * 0.0254 - 1.5),
-            width * 0.0254,
-            height * 0.0254,
-            facecolor=color,
-            edgecolor='black',
-        )
-        # Add the patch to the axes
-        ax.add_patch(rect)
-    ax.set_xlim(-1.5, 1.5)
-    ax.set_ylim(-1.5, 1.5)
-    ax.set_aspect(1)
-
-    plt.show()
-    # fig.suptitle('Path optimisation with 2$\\sigma$ covariance ellipses', y=1.01)
-    # fig.tight_layout()
-    # out = _OUT / 'fig1_paths.pdf'
-    # fig.savefig(out, bbox_inches='tight')
-    # print(f'Saved {out}')
-    # plt.close(fig)
+    fig.tight_layout()
+    out = _OUT / 'fig1_paths.pdf'
+    fig.savefig(out, bbox_inches='tight')
+    print(f'Saved {out}')
+    plt.close(fig)
 
 
 def _eval_rho(beliefs):
@@ -448,16 +362,16 @@ def print_results_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> No
     """Print per-condition, per-speed statistics across all runs."""
     w = 110
     print('\n' + '=' * w)
-    print('EXPERIMENT RESULTS — binary run-level safety, mean ± std clearance over safe runs')
+    print('EXPERIMENT RESULTS — success = safe + goal reached; clearance mean ± std (0 for failures)')
     print('=' * w)
 
     orig = sine_waypoints()
     opt = opt_waypoints()
 
     col = (
-        f'{"Fan":>4}  {"Runs":>4}  {"Safe%":>6}  {"Viols":>5}  {"Goal%":>6}  '
-        f'{"Clr med":>7}  {"Q25":>5}  {"Q75":>5}  '
-        f'{"Cov tr cm²":>10}  {"Dev mean":>8}  {"Dev std":>7}'
+        f'{"Fan":>4}  {"Runs":>4}  {"Success%":>9}  {"Viols":>5}  '
+        f'{"Clr mean":>8}  {"Clr std":>7}  '
+        f'{"Dev mean":>8}  {"Dev std":>7}'
     )
 
     for path_label, path_key, planned in [('DETERMINISTIC', 'det', orig), ('pDSTL-OPTIMISED', 'pdstl', opt)]:
@@ -472,12 +386,10 @@ def print_results_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> No
                 print(f'  {spd:>4}  {"—":>4}')
                 continue
             s = _run_stats(runs, planned)
-            flag = ' ◄ VIOLATIONS' if s['n_violated'] > 0 else ''
+            flag = ' ◄ FAILURES' if s['n_violated'] > 0 else ''
             print(
-                f'  {spd:>4}  {s["n_runs"]:>4}  {s["safety_pct"]:>6.1f}  {s["n_violated"]:>5}  '
-                f'{s["goal_pct"]:>6.1f}  '
-                f'{s["clr_median"]:>7.1f}  {s["clr_q25"]:>5.1f}  {s["clr_q75"]:>5.1f}  '
-                f'{s["pos_cov_trace_cm2"]:>10.3f}  '
+                f'  {spd:>4}  {s["n_runs"]:>4}  {s["success_pct"]:>9.1f}  {s["n_violated"]:>5}  '
+                f'{s["clr_mean"]:>8.1f}  {s["clr_std"]:>7.1f}  '
                 f'{s["dev_mean"]:>8.1f}  {s["dev_std"]:>7.1f}{flag}'
             )
 
@@ -524,14 +436,14 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
         r'           Clearance: median across all runs (violated/crashed runs assigned 0\,cm).}',
         r'  \label{tab:results}',
         r'  \setlength{\tabcolsep}{4pt}',
-        r'  \begin{tabular}{c rrr r rrr r}',
+        r'  \begin{tabular}{c rrr rrr}',
         r'    \toprule',
-        r'    & \multicolumn{4}{c}{Deterministic}',
-        r'    & \multicolumn{4}{c}{pDSTL (ours)} \\',
-        r'    \cmidrule(lr){2-5}\cmidrule(lr){6-9}',
+        r'    & \multicolumn{3}{c}{Deterministic}',
+        r'    & \multicolumn{3}{c}{pDSTL (ours)} \\',
+        r'    \cmidrule(lr){2-4}\cmidrule(lr){5-7}',
         r'    Fan',
-        r'    & Safe\,(\%)  & Goal\,(\%)  & Min.\,clr.\,(cm)  & Viols.',
-        r'    & Safe\,(\%)  & Goal\,(\%)  & Min.\,clr.\,(cm)  & Viols. \\',
+        r'    & Success\,(\%)  & Clr.\,(cm)  & Fails',
+        r'    & Success\,(\%)  & Clr.\,(cm)  & Fails \\',
         r'    \midrule',
     ]
 
@@ -540,30 +452,25 @@ def print_latex_table(run_data: dict[tuple[int, str], list[list[dict]]]) -> None
         p = stats[(spd, 'pdstl')]
         lbl = f'{spd}\\,(off)' if spd == 0 else str(spd)
 
-        sr_d = _pct(d, 'safety_pct')
-        sr_p = _pct(p, 'safety_pct')
-        gd = _pct(d, 'goal_pct')
-        gp = _pct(p, 'goal_pct')
-        cl_d = _pct(d, 'clr_median')
-        cl_p = _pct(p, 'clr_median')
+        sr_d = _pct(d, 'success_pct')
+        sr_p = _pct(p, 'success_pct')
+        cl_d = f'${d["clr_mean"]:.1f} \\pm {d["clr_std"]:.1f}$' if d else r'\textemdash'
+        cl_p = f'${p["clr_mean"]:.1f} \\pm {p["clr_std"]:.1f}$' if p else r'\textemdash'
         vd = _viols(d)
         vp = _viols(p)
 
         if d and p:
-            better_sr = p['safety_pct'] >= d['safety_pct']
-            better_goal = p['goal_pct'] >= d['goal_pct']
-            better_clr = p['clr_median'] >= d['clr_median']
+            better_sr = p['success_pct'] >= d['success_pct']
+            better_clr = p['clr_mean'] >= d['clr_mean']
             better_vio = p['n_violated'] <= d['n_violated']
             sr_p = _bold(sr_p, better_sr)
-            gp = _bold(gp, better_goal)
             cl_p = _bold(cl_p, better_clr)
             vp = _bold(vp, better_vio)
             sr_d = _bold(sr_d, not better_sr)
-            gd = _bold(gd, not better_goal)
             cl_d = _bold(cl_d, not better_clr)
             vd = _bold(vd, not better_vio)
 
-        lines.append(f'    {lbl} & {sr_d} & {gd} & {cl_d} & {vd} & {sr_p} & {gp} & {cl_p} & {vp} \\\\')
+        lines.append(f'    {lbl} & {sr_d} & {cl_d} & {vd} & {sr_p} & {cl_p} & {vp} \\\\')
 
     lines += [
         r'    \bottomrule',
@@ -722,7 +629,7 @@ def fig2_experiment(run_data: dict[tuple[int, str], list[list[dict]]]):
                 (line,) = ax.plot(mx, my, '-', color=col, lw=2.0, zorder=6)
                 if pt == 'det':  # collect legend handles once
                     handle_list.append(line)
-                    label_list.append(str(spd / 1000))
+                    label_list.append(f'Fan {spd}')
 
         ax.plot(*START, '^', color='#2ca02c', ms=7, zorder=7)
         ax.plot(*GOAL, '*', color='#d62728', ms=9, zorder=7)
@@ -880,7 +787,7 @@ def fig4_all_speeds(run_data: dict[tuple[int, str], list[list[dict]]]):
                 (line,) = ax.plot(mx, my, '-', color=col, lw=2.0, zorder=5)
                 if pt == 'det':  # collect legend handles once
                     handle_list.append(line)
-                    label_list.append(str(spd / 1000))
+                    label_list.append(f'Fan {spd}')
 
         ax.plot(*START, '^', color='#2ca02c', ms=7, zorder=6)
         ax.plot(*GOAL, '*', color='#d62728', ms=9, zorder=6)
@@ -930,10 +837,10 @@ if __name__ == '__main__':
     else:
         print(f'[plot_results] Found {sum(len(v) for v in RUN_DATA.values())} runs across {len(RUN_DATA)} cells.')
 
+    print_results_table(RUN_DATA)
+    print_latex_table(RUN_DATA)
     fig1_paths()
-    # print_results_table(RUN_DATA)
-    # print_latex_table(RUN_DATA)
-    # fig2_experiment(RUN_DATA)
-    # fig3_clearance(RUN_DATA)
-    # fig4_all_speeds(RUN_DATA)
-    # print(f'\nAll figures saved to {_OUT}/')
+    fig2_experiment(RUN_DATA)
+    fig3_clearance(RUN_DATA)
+    fig4_all_speeds(RUN_DATA)
+    print(f'\nAll figures saved to {_OUT}/')
