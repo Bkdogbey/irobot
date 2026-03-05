@@ -50,7 +50,7 @@ Q_STD_PER_FAN: dict[int, float] = {
 
 # Initial belief — measured values
 X0_MEAN = torch.tensor([0.0, -1.5], dtype=torch.float32)
-X0_COV = torch.diag(torch.tensor([1e-3, 1e-3], dtype=torch.float32))
+X0_COV = torch.diag(torch.tensor([5e-2, 5e-2], dtype=torch.float32))
 
 
 # ── Helper functions ─────────────────────────────────────────────────────────
