@@ -16,7 +16,7 @@ USE_OPTIMISED = False
 # Condition label: 'deterministic' (no optimisation) or 'pdstl' (optimised)
 CONDITION = 'deterministic'
 # Fan speed integer: 2 / 6 / 12 / 16
-FAN_SPEED = 6
+FAN_SPEED = 16
 #
 # Quick reference:
 #   Condition      USE_OPTIMISED   CONDITION          FAN_SPEED
