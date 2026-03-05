@@ -37,8 +37,8 @@ from irobot.src.projects.probabilistic_stl.planning.planner import (
 
 # ── Measured constants ───────────────────────────────────────────────────────
 T = 10  # planning horizon (number of control steps)
-DT = 0.693  # mean inter-waypoint time [s] — TODO: re-measure from new runs
-U_MAX = 0.52  # max inter-waypoint speed [m/s] — TODO: re-measure from new runs
+DT = 0.693  # mean inter-waypoint time [s] — confirmed from det. fan00 runs (mean=0.693, std=0.072)
+U_MAX = 0.44  # max inter-waypoint speed [m/s] — measured from det. fan00 runs (mean=0.43, max=0.44)
 Z_HEIGHT = 0.2  # flight height [m]
 
 Q_STD_PER_FAN: dict[int, float] = {
@@ -50,8 +50,7 @@ Q_STD_PER_FAN: dict[int, float] = {
 
 # Initial belief — measured values
 X0_MEAN = torch.tensor([0.0, -1.5], dtype=torch.float32)
-# Lighthouse static jitter: σ_x=8.6 mm, σ_y=4.1 mm
-X0_COV = torch.diag(torch.tensor([3.0e-2, 3.0e-2], dtype=torch.float32))
+X0_COV = torch.diag(torch.tensor([1e-3, 1e-3], dtype=torch.float32))
 
 
 # ── Helper functions ─────────────────────────────────────────────────────────
