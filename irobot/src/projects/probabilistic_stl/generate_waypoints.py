@@ -41,14 +41,6 @@ DT = 0.693  # mean inter-waypoint time [s] — TODO: re-measure from new runs
 U_MAX = 0.52  # max inter-waypoint speed [m/s] — TODO: re-measure from new runs
 Z_HEIGHT = 0.2  # flight height [m]
 
-_SCALE_Y_FACTOR = 1.7 / 2.15  # compresses commanded y to physical room span
-
-
-def _scale_y(y: float) -> float:
-    """Map commanded y ∈ [-1.5, 0.65] to physical y ∈ [-1.5, 0.20]."""
-    return -1.5 + _SCALE_Y_FACTOR * (y + 1.5)
-
-
 Q_STD_PER_FAN: dict[int, float] = {
     2: 0.001,
     6: 0.006,
@@ -66,12 +58,11 @@ X0_COV = torch.diag(torch.tensor([3.0e-2, 3.0e-2], dtype=torch.float32))
 
 
 def _sine_waypoints() -> list[tuple[float, float, float]]:
-    """10-waypoint sine path scaled to physical room (y ∈ [-1.5, 0.20])."""
+    """10-waypoint sine path (y ∈ [-1.5, 0.65]), unscaled commanded coordinates."""
     start_0 = 1.5
-    y_raw = np.linspace(-start_0, 0.65, 10)
-    x_pos = 0.5 * np.sin(np.pi * y_raw / start_0)
-    y_pos = [_scale_y(float(y)) for y in y_raw]
-    return [(float(x), y, Z_HEIGHT) for x, y in zip(x_pos, y_pos)]
+    y_pos = np.linspace(-start_0, 0.65, 10)
+    x_pos = 0.5 * np.sin(np.pi * y_pos / start_0)
+    return [(float(x), float(y), Z_HEIGHT) for x, y in zip(x_pos, y_pos)]
 
 
 def _build_environment() -> Environment:

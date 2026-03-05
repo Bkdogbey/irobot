@@ -16,7 +16,7 @@ USE_OPTIMISED = False
 # Condition label: 'deterministic' (no optimisation) or 'pdstl' (optimised)
 CONDITION = 'deterministic'
 # Fan speed integer: 2 / 6 / 12 / 16
-FAN_SPEED = 2
+FAN_SPEED = 6
 #
 # Quick reference:
 #   Condition      USE_OPTIMISED   CONDITION          FAN_SPEED
@@ -24,14 +24,10 @@ FAN_SPEED = 2
 #   pDSTL          True            'pdstl'            2 / 6 / 12 / 16
 
 
-_SCALE_Y_FACTOR = 1.7 / 2.15  # compresses commanded y to physical room span
-
-
 def _sine_waypoints() -> list[tuple[float, float, float]]:
     start_0 = 1.5
-    y_raw = np.linspace(-start_0, 0.65, 10)
-    x_pos = 0.5 * np.sin(np.pi * y_raw / start_0)
-    y_pos = [-1.5 + _SCALE_Y_FACTOR * (y + 1.5) for y in y_raw]
+    y_pos = np.linspace(-start_0, 0.65, 10)
+    x_pos = 0.5 * np.sin(np.pi * y_pos / start_0)
     return [(float(x), float(y), 0.2) for x, y in zip(x_pos, y_pos)]
 
 

@@ -1,0 +1,11 @@
+condition,t,x,y,z,outside_obs1,outside_obs2,outside_obs3,safe
+deterministic,3.0288,-0.0,-1.5,0.2,1,1,1,1
+deterministic,3.8062,-0.239857,-1.261111,0.2,1,1,1,1
+deterministic,4.5059,-0.420912,-1.022222,0.2,1,1,1,1
+deterministic,5.1088,-0.498782,-0.783333,0.2,1,1,1,1
+deterministic,5.695,-0.454376,-0.544444,0.2,1,1,1,1
+deterministic,6.3658,-0.298579,-0.305556,0.2,1,1,1,1
+deterministic,7.128,-0.069587,-0.066667,0.2,1,1,1,1
+deterministic,7.915,0.176465,0.172222,0.2,1,1,1,1
+deterministic,8.6421,0.379257,0.411111,0.2,1,1,1,1
+deterministic,9.2681,0.489074,0.65,0.2,1,1,1,1
