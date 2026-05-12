@@ -1,30 +1,25 @@
 [tool.poetry]
-name = "ixp"
+name = "irobot"
 version = "0.1.0"
-description = "A Python package for running behavioral experiments at iHuman Lab"
+description = "Robot software platform for the iHuman Lab (ROS2 / ros_sugar)"
 authors = [
     "iHuman Lab <ihuman.research.lab@gmail.com>",
 ]
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/elaheoveisi/ixp"
-keywords = ["experiments", "behavioral", "psychology", "eye-tracking", "lsl"]
+keywords = ["robotics", "ros2", "stl", "crazyflie", "ihuman"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
     "Programming Language :: Python :: 3.11",
 ]
-packages = [{ include = "ixp" }]
+packages = [{ include = "irobot" }]
 
+# Hardware and framework dependencies (ros_sugar, cflib, numpy, scipy, attrs)
+# are installed system-wide or via the robot's own environment — not via Poetry.
 [tool.poetry.dependencies]
 python = "^3.11"
-beartype = "^0.18.5"
-icontract = "^2.7.1"
-pydantic = "^2.9"
-ray = "^2.9"
-pygame = "^2.5"
-pylsl = "^1.16"
 
 
 [tool.poetry.group.test.dependencies]
@@ -38,11 +33,6 @@ isort = "^5.13.2"
 pre-commit = "^3.8.0"
 ruff = "^0.6.7"
 
-
-# [tool.black]
-# line-length = 120
-# target-version = ['py311']
-# skip-string-normalization = true
 
 [tool.isort]
 line_length = 120
@@ -116,13 +106,11 @@ exclude = [
     "node_modules",
     "venv",
 ]
-# Same as Black.
 line-length = 120
 
-# Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["E402"]
@@ -134,15 +122,10 @@ inline-quotes = "single"
 multiline-quotes = "single"
 
 [tool.ruff.mccabe]
-# Unlike Flake8, default to a complexity level of 10.
 max-complexity = 10
 
 [tool.ruff.isort]
 required-imports = ["from __future__ import annotations"]
-
-[tool.ruff.flake8-tidy-imports]
-# Disallow all relative imports.
-ban-relative-imports = "all"
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
