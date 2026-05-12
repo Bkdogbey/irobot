@@ -5,9 +5,7 @@ Simulates the Crazyflie running the reactive STL controller over the
 Catmull-Rom nominal path, with Gaussian process + measurement noise.
 
 Run:
-    python -m irobot.src.projects.crazyflie_stl.mission
-    (or)
-    python mission.py   (from within the crazyflie_stl folder)
+    python -m irobot.src.projects.pdstl.stl.mission
 
 Outputs:
   - Trajectory plot with obstacles, nominal path, actual path, belief ellipses
@@ -21,13 +19,13 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Ellipse
 
-from scenario import (
+from .scenario import (
     START, GOAL, GOAL_REGION, OBSTACLES, Z_FLIGHT,
     get_nominal_waypoints,
 )
-from belief import GaussianBelief2D
-from controller import STLController
-from stl import OutsideObstacle, InsideGoal
+from .belief import GaussianBelief2D
+from .controller import STLController
+from .stl import OutsideObstacle, InsideGoal
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
 DT          = 0.1     # time step (s)

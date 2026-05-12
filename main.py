@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from ros_sugar import Launcher
 
-from irobot.src.projects.probabilistic_stl.components.config import CrazyflieConfig
-from irobot.src.projects.probabilistic_stl.components.crazyflie import CrazyfliePlanning
+from irobot.src.projects.pdstl.config import CrazyflieConfig
+from irobot.src.projects.pdstl.component.crazyflie import CrazyfliePlanning
 
 my_component = CrazyfliePlanning(
     component_name='crazyflie_planning',
-    config=CrazyflieConfig(z_hold=0.3),
+    config=CrazyflieConfig(),
 )
 
 launcher = Launcher()

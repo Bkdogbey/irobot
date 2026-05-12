@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from belief import GaussianBelief2D
-from stl import OutsideObstacle
+from .belief import GaussianBelief2D
+from .stl import OutsideObstacle
 
 
 class STLController:

@@ -1,9 +1,8 @@
 """
 Numpy-based STL predicates and temporal operators for the Crazyflie mission.
 
-Self-contained — no PyTorch, no imports from probabilistic_stl.
-Semantics mirror probabilistic_stl/pdstl/operators.py but operate directly
-on lists of GaussianBelief2D objects.
+Self-contained STL predicates and temporal operators.
+Operates directly on lists of GaussianBelief2D objects.
 
 Probability bounds follow the Fréchet / StoRI convention:
     trace[t] = (lower, upper)  ∈ [0,1]²
@@ -19,7 +18,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from belief import GaussianBelief2D
+from .belief import GaussianBelief2D
 
 Bounds = tuple[float, float]
 Trace  = list[Bounds]          # one (lower, upper) per time step

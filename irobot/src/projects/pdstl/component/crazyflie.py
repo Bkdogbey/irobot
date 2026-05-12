@@ -6,23 +6,10 @@ import numpy as np
 from cflib.positioning.position_hl_commander import PositionHlCommander
 from ros_sugar.core import BaseComponent
 
-from irobot.src.projects.probabilistic_stl.components.flight_logger import FlightLogger
-from irobot.src.projects.probabilistic_stl.components.opt_waypoints import WAYPOINTS
+from irobot.src.projects.pdstl.component.flight_logger import FlightLogger
+from irobot.src.projects.pdstl.component.opt_waypoints import WAYPOINTS
+from irobot.src.projects.pdstl.config import CONDITION, FAN_SPEED, USE_OPTIMISED
 from irobot.src.robots.crazyflie.core.base import CrazyflieBase
-
-# ── Trial configuration  <-- edit these two lines before each run ──────────
-# Path selector: True → pDSTL-optimised path, False → original sine path
-USE_OPTIMISED = False
-# Condition label: 'deterministic' (no optimisation) or 'pdstl' (optimised)
-CONDITION = 'pdstl'
-# Fan speed integer: 2 / 6 / 12 / 16
-FAN_SPEED = 12
-
-#
-# Quick reference:
-#   Condition      USE_OPTIMISED   CONDITION          FAN_SPEED
-#   Deterministic  False           'deterministic'    2 / 6 / 12 / 16
-#   pDSTL          True            'pdstl'            2 / 6 / 12 / 16
 
 
 def _sine_waypoints() -> list[tuple[float, float, float]]:

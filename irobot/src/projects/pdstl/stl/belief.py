@@ -7,7 +7,6 @@ Models position uncertainty as N(mean, cov) and provides:
   - Marginal probability that position falls inside a rectangle
     (used by the STL predicates in stl.py)
 
-No imports from probabilistic_stl.
 """
 
 from __future__ import annotations

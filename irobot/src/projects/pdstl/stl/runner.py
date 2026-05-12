@@ -1,8 +1,7 @@
 """
 Hardware runner — Crazyflie STL mission on real hardware.
 
-Replaces the simple spline-follower in probabilistic_stl/components/crazyflie.py
-with the reactive STL belief-update loop.
+Runs the reactive STL belief-update loop on real hardware.
 
 Control interface (matches CrazyflieBase):
     takeoff(z_hold)                          — ramp to hover altitude
@@ -16,7 +15,7 @@ Measurement source:
 Loop rate: DT = 0.05 s  (20 Hz — matches Lighthouse logging period)
 
 Run (from repo root):
-    python -m irobot.src.projects.crazyflie_stl.cf_runner
+    python -m irobot.src.projects.pdstl.stl.runner
 """
 
 from __future__ import annotations
@@ -25,13 +24,11 @@ import logging
 import time
 
 import numpy as np
-from belief import GaussianBelief2D
-from controller import STLController
+from .belief import GaussianBelief2D
+from .controller import STLController
+from .scenario import GOAL_REGION, OBSTACLES, Z_FLIGHT, get_nominal_waypoints
 
-# STL module — self-contained, no imports from probabilistic_stl
-from scenario import GOAL_REGION, OBSTACLES, Z_FLIGHT, get_nominal_waypoints
-
-from irobot.src.projects.probabilistic_stl.components.config import CrazyflieConfig
+from irobot.src.projects.pdstl.config import CrazyflieConfig
 from irobot.src.robots.crazyflie.core.base import CrazyflieBase
 
 logging.basicConfig(level=logging.INFO)

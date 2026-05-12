@@ -1,7 +1,7 @@
 """
 Mission geometry for the Crazyflie STL experiment.
 
-Self-contained — no imports from probabilistic_stl.
+Mission geometry for the pDSTL Crazyflie experiment.
 
 Arena: x ∈ [-1, 1],  y ∈ [-2, 1]
 
