@@ -60,6 +60,7 @@ python main.py
 - **`robots/` is hardware-only** — no experiment logic, no project-specific constants.
 - **`projects/` is sandboxed** — each project is self-contained and does not import from another project.
 
+
 ---
 
 *Intelligent Human-Machine Nexus Lab*
