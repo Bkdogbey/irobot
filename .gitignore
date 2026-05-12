@@ -90,3 +90,6 @@ target/
 
 # Auto-generated schema cache
 cache/
+
+# Claude
+.claude/
