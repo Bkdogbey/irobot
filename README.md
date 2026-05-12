@@ -1,4 +1,5 @@
 # irobot
+### *Intelligent. Modular. Build-Free.*
 
 Central robot software platform for the **iHuman Lab**.
 Built on [ROS2](https://docs.ros.org) + [ros_sugar](https://github.com/automatika-robotics/ros-sugar) —
@@ -6,7 +7,7 @@ write robot components in pure Python, no `colcon build` required.
 
 ---
 
-## Structure
+## 📁 Structure
 
 ```
 irobot/
@@ -25,7 +26,7 @@ as the single place to edit parameters before a run.
 
 ---
 
-## Quick start
+## 🚀 Quick start
 
 ```bash
 # 1. Install system dependencies (ROS2, ros_sugar, and the relevant robot SDK)
@@ -36,14 +37,14 @@ python main.py
 
 ---
 
-## Adding a new robot
+## 🤖 Adding a new robot
 
 1. Create `irobot/src/robots/<robot_name>/`
 2. Add `core/base.py` — a Python class that wraps the robot's SDK
 3. Add a `README.md` with hardware setup instructions (udev rules, pairing, etc.)
 4. Add `__init__.py` files for Python packaging
 
-## Adding a new project
+## 🧪 Adding a new project
 
 1. Create `irobot/src/projects/<project_name>/`
 2. Add `config.py` — all tunable parameters in one file
@@ -53,7 +54,7 @@ python main.py
 
 ---
 
-## Conventions
+## 📌 Conventions
 
 - **One `config.py` per project** — all parameters that change between runs live there, nowhere else.
 - **`robots/` is hardware-only** — no experiment logic, no project-specific constants.
