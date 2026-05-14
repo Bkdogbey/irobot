@@ -28,13 +28,12 @@ def capture(arm: trossen_arm.TrossenArmDriver, label: str, description: str) -> 
     print("   Move the arm to this position, then press Enter...")
     while True:
         input()
-        # Read positions first, then re-grip before confirming
         cur_joints = list(arm.get_all_positions())
         cur_cart   = list(arm.get_cartesian_positions())
 
         arm.set_all_modes(trossen_arm.Mode.position)
-        arm.set_all_positions(cur_joints, 0.1, True)        # hold in place — no jerk
-        arm.set_gripper_position(GRIPPER_CLOSED, 0.5, True) # re-squeeze knife
+        arm.set_all_positions(cur_joints, 0.1, True)
+        arm.set_gripper_position(GRIPPER_CLOSED, 0.5, True)
 
         arm.set_all_modes(trossen_arm.Mode.external_effort)
         arm.set_all_external_efforts([0.0] * 7, 0.0, False)
@@ -56,7 +55,6 @@ def write_config(captured: dict) -> None:
     ct = captured["CAKE_TOP"]
     cc = captured["CAKE_CUT"]
 
-    # Read existing config to preserve gripper constants (manually tuned)
     gripper_open   = 0.035
     gripper_closed = 0.000
     if CONFIG_PATH.exists():
@@ -126,7 +124,7 @@ if __name__ == '__main__':
     input()
     arm.set_gripper_position(GRIPPER_CLOSED, 1.5, True)
     time.sleep(2)
-    arm.set_gripper_position(GRIPPER_CLOSED, 1.5, True)  # re-squeeze
+    arm.set_gripper_position(GRIPPER_CLOSED, 1.5, True)
     time.sleep(2)
     print("Knife gripped.")
 

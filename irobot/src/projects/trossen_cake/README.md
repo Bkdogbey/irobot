@@ -22,20 +22,22 @@ cakes into equal pieces with straight cuts.
 
 ```
 trossen_cake/
-├── README.md                  ← this file
-├── config.py                  ← project parameters (edit before running)
-├── cake_config.py             ← calibrated constants (auto-generated — do not edit)
-├── calibrate_arm.py           ← interactive calibration tool
-├── gravity_comp.py            ← gravity compensation mode (for manual teaching)
-├── test_grip.py               ← gripper strength / knife pickup test
-├── configure_trossen.py       ← arm inspection utility
-├── set_manual_ip.py           ← arm IP address utility
+├── README.md                       ← this file
+├── config.py                       ← project parameters (edit before running)
+├── cake_config.py                  ← calibrated constants (auto-generated — do not edit)
+├── calibrate_arm.py                ← cake-specific calibration tool (writes cake_config.py)
+├── setup/                          ← general arm setup — run these first on any new machine
+│   ├── test_arm.py                 ← verify connectivity: home → print pose → sleep
+│   ├── test_gripper.py             ← verify gripper: open → close → open, print positions
+│   ├── gravity_comp.py             ← enable gravity compensation for manual arm teaching
+│   ├── configure_trossen.py        ← inspect full arm configuration and state
+│   └── set_manual_ip.py            ← change the arm's IP address in EEPROM
 ├── algorithms/
-│   ├── cake_cut.py            ← autonomous rectangular cake cutting (5 strips)
-│   └── cut_round_cake.py      ← autonomous round cake cutting (up to 8 slices)
+│   ├── cake_cut.py                 ← autonomous rectangular cake cutting (5 strips)
+│   └── cut_round_cake.py           ← autonomous round cake cutting (up to 8 slices)
 └── teleoperation/
-    ├── teleoperation.py       ← single leader-follower pair (30 s)
-    └── teleoperation_4arm.py  ← two simultaneous leader-follower pairs (120 s)
+    ├── teleoperation.py            ← single leader-follower pair (30 s)
+    └── teleoperation_4arm.py       ← two simultaneous leader-follower pairs (120 s)
 ```
 
 Run all scripts from the project root:
@@ -114,7 +116,7 @@ For each pose:
    (or move and press Enter again to re-capture)
 
 When all 5 poses are captured, `calibrate_arm.py` **writes `cake_config.py`
-automatically**. There is nothing to copy or paste.
+automatically** to the project root. There is nothing to copy or paste.
 
 ---
 
@@ -147,6 +149,7 @@ CAKE_Z_CUT = CAKE_Z_TOP + 0.01   # knife barely skims the top surface
 ```
 
 Run again and confirm the knife touches the correct positions on the cake.
+
 
 ### Step 4 — Full Cut
 
@@ -244,6 +247,7 @@ For manual control or demonstration before a cut session.
 ```bash
 python teleoperation/teleoperation.py
 ```
+
 
 Runs for 30 seconds with force feedback. Let go of the leader when the time expires
 — the arm will lock and move to home.
