@@ -16,10 +16,10 @@ classifiers = [
 ]
 packages = [{ include = "irobot" }]
 
-# Hardware and framework dependencies (ros_sugar, cflib, numpy, scipy, attrs)
-# are installed system-wide or via the robot's own environment — not via Poetry.
+# ros_sugar, numpy, scipy, attrs are system-installed alongside ROS2.
 [tool.poetry.dependencies]
 python = "^3.11"
+cflib = ">=0.1"
 
 
 [tool.poetry.group.test.dependencies]
