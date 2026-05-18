@@ -1,15 +1,31 @@
 # irobot
 ### *Intelligent. Modular. Build-Free.*
 
-Central robot software platform for the **iHuman Lab**.
-Built on [ROS2](https://docs.ros.org) + [ros_sugar](https://github.com/automatika-robotics/ros-sugar) —
-write robot components in pure Python, no `colcon build` required.
+**irobot** is a Python library of robot drivers developed at the **iHuman Lab**. Each driver wraps a robot's hardware SDK into a clean, importable Python class. Install irobot, import the driver for your robot, and build your application on top — no framework lock-in required.
 
-Install `irobot`, import the robot driver you need, and build your application on top.
+Drivers work standalone (plain Python) or as ROS2 components via [ros_sugar](https://github.com/automatika-robotics/ros-sugar), with no `colcon` build step.
+
+---
+
+## 🤖 Supported Robots
+
+| Robot | Description | Driver Docs |
+|-------|-------------|-------------|
+| [Crazyflie 2.x](https://www.bitcraze.io/products/crazyflie-2-1/) | Nano quadrotor by Bitcraze | [irobot/src/robots/crazyflie/README.md](irobot/src/robots/crazyflie/README.md) |
+
+---
+
+## Prerequisites
+
+- Python 3.11 or higher
+- The hardware SDK for your robot (see the robot's README for installation)
+- **ROS2 + ros_sugar** — only required if you are using ROS2-based components (optional)
 
 ---
 
 ## 📦 Installation
+
+Clone the repository and install in editable mode:
 
 ```bash
 git clone https://github.com/iHumanLab/irobot.git
@@ -17,78 +33,68 @@ cd irobot
 pip install -e .
 ```
 
-> ROS2 and ros_sugar must be installed in your environment for ROS-based component usage.
+Then install the SDK for your specific robot. See the robot's README for exact instructions.
 
 ---
 
-## 🔌 Usage
+## 🚀 Quick Start
 
-**Standalone (no ROS):**
+Import the controller and configuration class for your robot, configure it, and call the driver's methods:
 
 ```python
-from irobot import CrazyflieController, CrazyflieConfig
+from irobot import RobotController, RobotConfig
 
-drone = CrazyflieController(CrazyflieConfig(uri='radio://0/80/2M/E7E7E7E781'))
-drone.takeoff()
-drone.fly_to(0.5, 0.5, 0.3)
-drone.land()
+robot = RobotController(RobotConfig(...))
+robot.connect()
+
+# Use the robot-specific API
+# See your robot's README for full usage and examples
 ```
 
-**As a ROS2 component (ros_sugar):**
-
-Copy `irobot/src/robots/crazyflie/examples/crazyflie_ros_component.py` into your project and extend `_execute_once` with your mission logic.
+Each robot exports its classes at the top level of the `irobot` package. See the [Supported Robots](#-supported-robots) table above for links to robot-specific documentation.
 
 ---
 
-## 🚀 Quick start (development)
-
-```bash
-# 1. Clone and install (see above)
-# 2. Set your radio URI in irobot/src/robots/crazyflie/config.py
-# 3. Run the demo
-python main.py
-```
-
----
-
-## 📁 Structure
+## 📁 Repository Structure
 
 ```
 irobot/
-├── main.py                    ← demo launcher (development use)
+├── main.py                    ← demo launcher (development use only)
 │
 └── irobot/src/
     └── robots/                ← one folder per supported robot
         └── <robot_name>/
-            ├── core/          ← driver: base, controller, logging
-            ├── examples/      ← runnable examples and ROS component templates
-            ├── config.py      ← hardware configuration dataclass
-            └── README.md      ← hardware setup guide (udev rules, pairing, etc.)
+            ├── core/          ← driver internals (connection, controller, logging)
+            ├── examples/      ← usage examples and ROS2 component templates
+            ├── config.py      ← all hardware parameters in one dataclass
+            └── README.md      ← setup guide and full API documentation
 ```
 
-Each robot folder wraps a hardware SDK into a clean Python class.
-Examples live next to the robot they demo — copy them into your own project as a starting point.
+Each robot folder is self-contained: the driver, its configuration, its examples, and its hardware setup guide all live together. When you want to use a robot, start with its `README.md`.
 
 ---
 
-## 🤖 Adding a new robot
+## 🤖 Adding a New Robot
 
-1. Create `irobot/src/robots/<robot_name>/`
-2. Add `config.py` — a dataclass with all hardware parameters (URI, timeouts, rates)
-3. Add `core/base.py` — a Python class that wraps the robot's SDK
-4. Add `core/controller.py` — high-level movement and control primitives
-5. Add `examples/` — at least one runnable example or ROS component template
-6. Add a `README.md` with hardware setup instructions (udev rules, pairing, etc.)
-7. Add `__init__.py` files and export from `irobot/__init__.py`
+Contributions are welcome. Follow these steps to add a new robot driver:
 
----
-
-## 📌 Conventions
-
-- **One `config.py` per robot** — all hardware parameters live there, nowhere else.
-- **`robots/` is hardware-only** — no experiment logic, no application-specific constants.
-- **`examples/` stays inside the robot folder** — examples are robot-specific and ship with the driver.
+1. Create a folder at `irobot/src/robots/<robot_name>/`
+2. Add `config.py` — a Python dataclass holding all hardware parameters (addresses, timeouts, rates). This is the only place parameters should live.
+3. Add `core/base.py` — a class that wraps the robot's SDK, manages the connection lifecycle, and exposes live state.
+4. Add `core/controller.py` — high-level motion primitives built on top of the base class.
+5. Add `core/logging.py` (optional) — a mixin for onboard sensor logging, if applicable.
+6. Add `examples/` — at least one runnable Python example and, if applicable, a ROS2 component template.
+7. Add a `README.md` — hardware setup instructions (drivers, udev rules, pairing) plus configuration and API documentation.
+8. Add `__init__.py` files throughout and export the main classes from `irobot/__init__.py`.
 
 ---
 
-*Intelligent Human-Machine Nexus Lab*
+## 📌 Design Conventions
+
+- **One `config.py` per robot** — all hardware parameters belong there and nowhere else.
+- **`robots/` is hardware-only** — drivers wrap hardware SDKs. No experiment logic, application state, or project-specific constants belong here.
+- **`examples/` travels with the robot** — examples are co-located with the robot they demonstrate and ship as part of the driver.
+
+---
+
+*iHuman Lab — Intelligent Human-Machine Nexus*
