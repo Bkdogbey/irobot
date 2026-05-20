@@ -130,6 +130,37 @@ The example uses `PositionHlCommander` from cflib for high-level position comman
 
 ---
 
+## Swarm Examples
+
+Two ready-to-run swarm scripts are provided for demonstrations with multiple Crazyflies. Both use the `cflib.swarm.Swarm` class with the High Level Commander and require a Crazyradio PA and an absolute positioning system (Lighthouse or equivalent).
+
+### `examples/swarm_square.py` — Synchronised Square
+
+The simplest swarm demo. Place the 4 drones anywhere on the floor and run the script — each drone independently flies a 1m square from its own starting position, all in parallel. No pre-arranged formation required.
+
+```bash
+python irobot/src/robots/crazyflie/examples/swarm_square.py
+```
+
+### `examples/swarm_formation.py` — Formation Flying
+
+A more advanced demo. The 4 drones are pre-placed at the corners of a 1m square and execute a coordinated choreography:
+
+1. All take off and fly to their assigned corner.
+2. All converge to the centre simultaneously.
+3. Each drone rotates one position clockwise.
+4. All return to their original corners and land.
+
+The script prints the corner assignments when it starts so you know where to place each drone.
+
+```bash
+python irobot/src/robots/crazyflie/examples/swarm_formation.py
+```
+
+**Before running either swarm script**, edit the `URIS` constants at the top of the file to match your hardware. All Crazyflies in a swarm must share the same radio channel.
+
+---
+
 ## API Reference
 
 ### `CrazyflieConfig`

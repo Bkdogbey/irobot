@@ -20,6 +20,7 @@ packages = [{ include = "irobot" }]
 [tool.poetry.dependencies]
 python = "^3.11"
 cflib = ">=0.1"
+trossen-arm = ">=1.0"
 
 
 [tool.poetry.group.test.dependencies]

@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 MIN_THRUST = 20000
 MAX_THRUST = 25000
-DEFAULT_HOVER_Z = 0.3  # meters
 
 
 class CrazyflieController(CrazyflieBase):
@@ -102,14 +101,13 @@ class CrazyflieController(CrazyflieBase):
         time.sleep(0.1)
 
         logger.info('Flying from %s to %s', start, end)
-        takeoff_time = max(travel_time, travel_time * (sz / max(sz, 0.01)))
-        self._move_to((sx, sy, 0.0), (sx, sy, sz), duration=takeoff_time)
+        self._move_to((sx, sy, 0.0), (sx, sy, sz), duration=travel_time)
         self.fly_to(sx, sy, sz, duration=hover_time)
         self.fly_to(ex, ey, ez, duration=travel_time)
         self.fly_to(ex, ey, ez, duration=hover_time)
 
         logger.info('Landing')
-        self._move_to((ex, ey, ez), (ex, ey, 0.05), duration=takeoff_time)
+        self._move_to((ex, ey, ez), (ex, ey, 0.05), duration=travel_time)
         for _ in range(20):
             self.cf.commander.send_setpoint(0, 0, 0, 0)
             time.sleep(0.05)
