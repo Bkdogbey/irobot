@@ -29,10 +29,10 @@ logging.basicConfig(level=logging.ERROR)
 # All URIs in a swarm must share the same radio channel (80 here).
 
 URIS = {
-    'radio://0/80/2M/E7E7E7E7E1',  # drone 1
-    'radio://0/80/2M/E7E7E7E7E2',  # drone 2
-    'radio://0/80/2M/E7E7E7E7E3',  # drone 3
-    'radio://0/80/2M/E7E7E7E7E4',  # drone 4
+    'radio://0/80/2M/E7E7E7E784',  # drone 1
+    'radio://0/80/2M/E7E7E7E780',  # drone 2
+    'radio://0/80/2M/E7E7E7E782',  # drone 3
+    'radio://0/80/2M/E7E7E7E783',  # drone 4
 }
 
 # ── Flight parameters ─────────────────────────────────────────────────────────
