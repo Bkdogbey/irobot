@@ -17,15 +17,15 @@ from irobot.src.robots.crazyflie import CrazyflieConfig, CrazyflieController
 class CrazyflieDemo(BaseComponent):
     def __init__(self, *, component_name: str, config: CrazyflieConfig, **kwargs) -> None:
         self.robot = CrazyflieController(config)
-        super().__init__(component_name=component_name, config=config, **kwargs)
+        super().__init__(component_name=component_name, **kwargs)
         self.commander = PositionHlCommander(self.robot.cf)
 
     def _execute_once(self) -> None:
         waypoints = [
-            (0.5, 0.0, 0.3),
-            (0.5, 0.5, 0.3),
-            (0.0, 0.5, 0.3),
-            (0.0, 0.0, 0.3),
+            (0.8, -0.5, 0.3),
+            (0.8, -1.5, 0.3),
+            (0.2, -1.5, 0.3),
+            (0.2, -0.5, 0.3),
         ]
         for x, y, z in waypoints:
             self.commander.go_to(x, y, z)
