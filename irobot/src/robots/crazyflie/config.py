@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 class CrazyflieConfig:
     """Hardware configuration for a single Crazyflie drone."""
 
-    uri: str = 'radio://0/80/2M/E7E7E7E780'
+    uri: str = 'radio://0/84/2M/E7E7E7E85'
     log_rate_ms: int = 50
     connect_timeout: float = 10.0
     hover_z: float = 0.3
