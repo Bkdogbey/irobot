@@ -1,23 +1,30 @@
-"""Crazyflie loop flight: a smooth curve out and a raised curve back.
+"""Crazyflie 3D figure-8: a vertical figure-eight that also climbs and descends.
 
-FORWARD (0.30 m): from START (1,-2) to (0.5,0), passing through (0.5,-1.62), the
-midpoint (0.35,-1), and (0.4,-0.5) — bulging left.
-RETURN: from (0.5,0) curve up via (0.25,0.25) to (0.1,0); there climb to
-RAISED_HEIGHT (0.60 m) and fly the straight leg down to (0.1,-0.65); descend back
-to 0.30 m and curve through (0.35,-1), (0.15,-1.5) to the END (0,-2).
+Same in-plane shape as figure_eight_flight.py (a Lemniscate of Gerono, symmetric
+about x = 0.5, spanning y in [-2, 0] with the gate at (0.5, -1) and total lobe
+width 0.5 m), but the altitude now varies along the path instead of staying flat —
+so the curve is a true 3D space curve rather than a planar one.
 
-Each leg is a shape-preserving PCHIP spline through its control points, sampled
-densely and flown with PositionHlCommander (each leg's duration sized from
-distance / velocity, so motion stays smooth). The drone takes off wherever it is,
-flies to the start at TRANSIT_HEIGHT, descends to the cruise height, traces the
-forward curve, climbs to the return lane, traces the way back, descends, and lands
-at (0,-2).
+    x(φ) = 0.5 + HALF_WIDTH * sin(2φ)                       # x in [0.25, 0.75]
+    y(φ) = -1.0 + V_HALF     * cos(φ)                        # y in [-2, 0]
+    z    = Z_MIN + (Z_MAX - Z_MIN) * (y - BOTTOM_Y) / span   # z tracks height on y
 
-    python3 irobot/src/robots/crazyflie/examples/waypoint_flight.py   # from repo root
+Altitude leans with the climb: low at the bottom tips (Z_MIN), mid at the gate,
+high at the top apex (Z_MAX) — both safely under the 0.60 m ceiling. For φ from π
+to 3π the drone starts low at the bottom tip (0.5,-2,Z_MIN), rises through the
+lower lobe to the gate, over the apex at (0.5,0,Z_MAX), and back down to the
+bottom tip, where it lands in place.
+
+The curve is smooth by construction (no spline needed), sampled densely and flown
+with PositionHlCommander (each leg's duration sized from distance / velocity). The
+drone takes off wherever it is, flies to the bottom tip at TRANSIT_HEIGHT, descends
+to Z_MIN, traces the 3D 8, and lands.
+
+    python3 irobot/src/robots/crazyflie/examples/figure_eight_3d_flight.py   # from repo root
 
 Requires cflib + a Crazyradio and absolute positioning (Lighthouse). Does not
 depend on ros_sugar. Override the drone with e.g.
-    CFLIB_URI=radio://0/85/2M/E7E7E7E85 python3 ...waypoint_flight.py
+    CFLIB_URI=radio://0/85/2M/E7E7E7E85 python3 ...figure_eight_3d_flight.py
 """
 
 from __future__ import annotations
@@ -32,13 +39,14 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie.syncLogger import SyncLogger
 from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils import uri_helper
-from scipy.interpolate import PchipInterpolator
 
 # --- Mission parameters -----------------------------------------------------
 URI = uri_helper.uri_from_env(default="radio://0/85/2M/E7E7E7E85")
 
-HEIGHT = 0.20              # constant cruise altitude (m) for the curve
-TRANSIT_HEIGHT = 0.60      # m — fly to the start at this height, then descend to HEIGHT
+Z_MIN = 0.15               # m — altitude at the bottom tips (start / end)
+Z_MAX = 0.65               # m — altitude at the top apex (hard cap: never exceed 0.60)
+TAKEOFF_HEIGHT = 0.20      # m — brief initial climb before transiting to the start
+TRANSIT_HEIGHT = 0.60      # m — fly to the start at this height, then descend to Z_MIN
 CRUISE_VELOCITY = 0.30     # m/s — PositionHlCommander sizes each leg from this
 TAKEOFF_VELOCITY = 0.30    # m/s for the vertical takeoff
 WAYPOINT_DELAY = 0.10      # s pause between waypoints (keeps the motion flowing)
@@ -47,58 +55,28 @@ ESTIMATOR_SPREAD_LIMIT = 0.08     # max x/y estimate jitter (m) before we call i
 ESTIMATOR_SETTLE_TIMEOUT = 12.0   # give up if the estimate never settles (s)
 
 # --- Path definition --------------------------------------------------------
-# Each curved segment is a shape-preserving PCHIP spline through its control
-# points, sampled densely so PositionHlCommander traces one smooth curve that hits
-# each point with no overshoot between them.
-_N = 16   # samples per curve segment (denser = smoother)
+# Vertical Lemniscate of Gerono, symmetric about x = 0.5, with a leaning altitude
+# profile. Traced parametrically (smooth by construction) over one full loop,
+# φ from π (bottom tip) to 3π (back to the bottom tip).
+GATE = (0.5, -1.0)         # figure centre / self-crossing point (x, y)
+TOP_Y = 0.0                # top apex y
+BOTTOM_Y = -2.0            # bottom tip y (= start / end)
+V_HALF = (TOP_Y - BOTTOM_Y) / 2.0   # 1.0 — vertical half-height about the gate
+WIDTH = 0.8                # total side-to-side width of the lobes
+HALF_WIDTH = WIDTH / 2.0   # 0.25 — bulge each side of x = 0.5
+N_SAMPLES = 100            # samples around the full loop (denser = smoother)
 
 
-def _pchip_xy(control: np.ndarray, axis: str, n: int = _N) -> np.ndarray:
-    """Sample a PCHIP through `control` (Kx2 [x, y]); return (M, 2) [x, y].
-
-    axis='y' fits x(y); axis='x' fits y(x). Samples span the independent axis'
-    range (including the exact control values), ascending in that axis — reverse
-    the result to flip flight direction.
-    """
-    col = 1 if axis == "y" else 0
-    other = 1 - col
-    fit = PchipInterpolator(control[:, col], control[:, other])
-    s = np.union1d(np.linspace(control[:, col].min(), control[:, col].max(), n), control[:, col])
-    out = np.empty((len(s), 2))
-    out[:, col] = s
-    out[:, other] = fit(s)
-    return out
+def _figure_eight_xyz(n: int = N_SAMPLES) -> np.ndarray:
+    """Sample the 3D figure-8; return (n, 3) [x, y, z] in flight order."""
+    phi = np.linspace(np.pi, 3 * np.pi, n)
+    x = GATE[0] + HALF_WIDTH * np.sin(2 * phi)
+    y = GATE[1] + V_HALF * np.cos(phi)
+    z = Z_MIN + (Z_MAX - Z_MIN) * (y - BOTTOM_Y) / (TOP_Y - BOTTOM_Y)
+    return np.column_stack([x, y, z])
 
 
-def _with_z(xy: np.ndarray, z: float) -> np.ndarray:
-    return np.column_stack([xy, np.full(len(xy), z)])
-
-
-# FORWARD curve (flat HEIGHT): START (1,-2) -> (0.5,0), bulging left. Control
-# points in flight order (y increasing).
-FORWARD_CONTROL_POINTS = np.array([
-    [1.00, -2.00],   # START
-    [0.50, -1.62],   # curves the first half more
-    [0.26, -1.00],   # midpoint
-    [0.40, -0.50],   # shapes the second half
-    [0.50,  0.00],   # forward end
-])
-FORWARD_WAYPOINTS = _with_z(_pchip_xy(FORWARD_CONTROL_POINTS, "y"), HEIGHT)
-
-# RETURN leg, as (x, y, z) waypoints (the shape is not single-valued in y and the
-# altitude changes, so it is built from segments):
-#   A: (0.5,0) -> curve up via (0.25,0.25) -> (0.1,0)         at HEIGHT
-#   B: climb in place, straight to (0.1,-0.65), descend        RAISED_HEIGHT -> HEIGHT
-#   C: curve through (0.35,-1), (0.15,-1.5) to the END (0,-2)  at HEIGHT
-RAISED_HEIGHT = 0.60   # m — raised altitude (>0.5) for the (0.1,0) -> (0.1,-0.65) leg
-_ret_a = _with_z(_pchip_xy(np.array([[0.10, 0.00], [0.25, 0.25], [0.50, 0.00]]), "x")[::-1], HEIGHT)
-_ret_b = np.array([
-    [0.10,  0.00, RAISED_HEIGHT],   # climb in place at (0.1, 0)
-    [0.10, -0.65, RAISED_HEIGHT],   # straight leg at the raised altitude
-    [0.10, -0.65, HEIGHT],          # descend in place
-])
-_ret_c = _with_z(_pchip_xy(np.array([[0.00, -2.00], [0.15, -1.50], [0.35, -1.00], [0.10, -0.65]]), "y")[::-1], HEIGHT)
-RETURN_WAYPOINTS = np.vstack([_ret_a, _ret_b, _ret_c[1:]])   # _ret_c[0] duplicates (0.1,-0.65)
+FIGURE8_WAYPOINTS = _figure_eight_xyz()
 
 
 def reset_estimator(scf: SyncCrazyflie) -> None:
@@ -212,41 +190,35 @@ def run_flight(scf: SyncCrazyflie) -> None:
             y=float(settled[1]),
             z=float(settled[2]),
             default_velocity=CRUISE_VELOCITY,
-            default_height=HEIGHT,
+            default_height=TAKEOFF_HEIGHT,
             controller=PositionHlCommander.CONTROLLER_PID,
         )
 
         _send_arming_request(scf.cf, True)
         time.sleep(1.0)
 
-        print(f"Taking off to {HEIGHT:.2f} m")
-        commander.take_off(HEIGHT, TAKEOFF_VELOCITY)
+        print(f"Taking off to {TAKEOFF_HEIGHT:.2f} m")
+        commander.take_off(TAKEOFF_HEIGHT, TAKEOFF_VELOCITY)
         airborne = True
 
-        # Fly from wherever we took off to the start (FORWARD_WAYPOINTS[0] = (1,-2))
-        # at TRANSIT_HEIGHT, then descend to the cruise height at the start.
-        start_x = float(FORWARD_WAYPOINTS[0, 0])
-        start_y = float(FORWARD_WAYPOINTS[0, 1])
+        # Fly from wherever we took off to the bottom tip (FIGURE8_WAYPOINTS[0] =
+        # (0.5,-2)) at TRANSIT_HEIGHT, then descend to the tip's low altitude (Z_MIN).
+        start_x, start_y, start_z = (float(v) for v in FIGURE8_WAYPOINTS[0])
         print(f"Flying to start ({start_x:.2f}, {start_y:.2f}) at {TRANSIT_HEIGHT:.2f} m")
         commander.go_to(start_x, start_y, TRANSIT_HEIGHT)
-        commander.go_to(start_x, start_y, HEIGHT)
+        commander.go_to(start_x, start_y, start_z)
 
-        # Trace the forward curve. PositionHlCommander sizes each leg's duration from
-        # the distance and CRUISE_VELOCITY, so the motion stays smooth and continuous.
-        print(f"Tracing forward curve through {len(FORWARD_WAYPOINTS)} waypoints")
-        for i in range(1, len(FORWARD_WAYPOINTS)):
-            x, y, z = (float(v) for v in FORWARD_WAYPOINTS[i])
+        # Trace the 3D figure-8 — each waypoint carries its own altitude, so the drone
+        # climbs to the apex and descends back as it goes. PositionHlCommander sizes
+        # each leg's duration from the 3D distance and CRUISE_VELOCITY.
+        print(f"Tracing 3D figure-8 through {len(FIGURE8_WAYPOINTS)} waypoints "
+              f"(z {Z_MIN:.2f}–{Z_MAX:.2f} m)")
+        for i in range(1, len(FIGURE8_WAYPOINTS)):
+            x, y, z = (float(v) for v in FIGURE8_WAYPOINTS[i])
             commander.go_to(x, y, z)
             time.sleep(WAYPOINT_DELAY)
 
-        # Trace the return leg — it carries its own altitude changes (curve to
-        # (0.1,0), raised straight leg down to (0.1,-0.65), then a curve to the END).
-        print(f"Tracing return through {len(RETURN_WAYPOINTS)} waypoints")
-        for i in range(1, len(RETURN_WAYPOINTS)):
-            x, y, z = (float(v) for v in RETURN_WAYPOINTS[i])
-            commander.go_to(x, y, z)
-            time.sleep(WAYPOINT_DELAY)
-
+        # The 8 closes low at the bottom tip (0.5,-2) — land in place.
         print("Landing")
         commander.land()
         airborne = False
@@ -264,10 +236,12 @@ def run_flight(scf: SyncCrazyflie) -> None:
 
 
 def main() -> None:
-    print(f"Forward ({len(FORWARD_WAYPOINTS)} pts @ {HEIGHT:.2f} m): "
-          f"{tuple(round(v, 2) for v in FORWARD_WAYPOINTS[0])} -> {tuple(round(v, 2) for v in FORWARD_WAYPOINTS[-1])}")
-    print(f"Return ({len(RETURN_WAYPOINTS)} pts, raised leg @ {RAISED_HEIGHT:.2f} m): "
-          f"{tuple(round(v, 2) for v in RETURN_WAYPOINTS[0])} -> {tuple(round(v, 2) for v in RETURN_WAYPOINTS[-1])}")
+    print(f"3D figure-8 ({len(FIGURE8_WAYPOINTS)} pts, width {WIDTH:.2f} m, "
+          f"z {Z_MIN:.2f}–{Z_MAX:.2f} m): "
+          f"start {tuple(round(v, 2) for v in FIGURE8_WAYPOINTS[0])} -> "
+          f"gate ({GATE[0]:.2f}, {GATE[1]:.2f}) -> "
+          f"apex ({GATE[0]:.2f}, {TOP_Y:.2f}, {Z_MAX:.2f}) -> "
+          f"end {tuple(round(v, 2) for v in FIGURE8_WAYPOINTS[-1])}")
 
     cflib.crtp.init_drivers()
 
